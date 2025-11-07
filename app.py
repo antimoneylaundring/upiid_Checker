@@ -14,6 +14,34 @@ def clean_upi(value):
 SUPABASE_URL = "https://zekvwyaaefjtjqjolsrm.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpla3Z3eWFhZWZqdGpxam9sc3JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNDA4NTksImV4cCI6MjA3NzgxNjg1OX0.wXT_VnXuEZ2wtHSJMR9VJAIv_mtXGQdu0jy0m9V2Gno"
 
+st.header("Import UPI Data into Supabase (Bulk Insert)")
+uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
+
+if uploaded_file:
+    df = pd.read_excel(uploaded_file)
+
+    # Ensure required columns exist
+    if not {"InsertDate", "Upi_vpa"}.issubset(df.columns):
+        st.error("Excel must contain columns: InsertDate, Upi_vpa")
+    else:
+        # Clean UPI values
+        df["Upi_vpa"] = df["Upi_vpa"].apply(clean_upi)
+
+        st.write("### Preview Data")
+        st.dataframe(df)
+
+        # ---------- BULK INSERT BUTTON ----------
+        if st.button("Bulk Insert into Supabase"):
+            try:
+                data_to_insert = df.to_dict(orient="records")
+
+                #BULK INSERT (super fast)
+                supabase.table("upi_table").insert(data_to_insert).execute()
+
+                st.success(f"Successfully inserted {len(data_to_insert)} records into Supabase!")
+            except Exception as e:
+                st.error(f"Error inserting data: {str(e)}")
+
 TABLE_NAME = "all_upiiD"
 DB_COLUMN = "Upi_vpa"
 EXCEL_COLUMN = "Upi_vpa"
