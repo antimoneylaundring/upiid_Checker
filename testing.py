@@ -4,18 +4,12 @@ import re
 from supabase import create_client, Client
 from io import BytesIO
 
-# -------------------------
-# Function to clean & normalize UPI Strings
-# -------------------------
 def clean_upi(value):
     value = str(value).lower().strip()
     value = re.sub(r'[\u200b\u200c\u200d\u2060]', '', value)  # remove invisible characters
     value = re.sub(r'\s+', '', value)  # remove spaces
     return value
 
-# -------------------------
-# Supabase Config
-# -------------------------
 SUPABASE_URL = 'https://zekvwyaaefjtjqjolsrm.supabase.co'
 SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpla3Z3eWFhZWZqdGpxam9sc3JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNDA4NTksImV4cCI6MjA3NzgxNjg1OX0.wXT_VnXuEZ2wtHSJMR9VJAIv_mtXGQdu0jy0m9V2Gno'
 
@@ -25,9 +19,6 @@ EXCEL_COLUMN = 'Upi_vpa'
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# -------------------------
-# Streamlit UI
-# -------------------------
 st.title("UPI ID Database Checker")
 
 uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx"])
