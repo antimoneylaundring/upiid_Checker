@@ -20,7 +20,7 @@ EXCEL_COLUMN = 'Upi_vpa'
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-st.title("UPI ID Database Checker — Fast Version")
+st.title("UPI ID Database Checker")
 
 uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx"])
 
