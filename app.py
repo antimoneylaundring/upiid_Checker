@@ -6,8 +6,8 @@ from io import BytesIO
 
 def clean_upi(value):
     value = str(value).lower().strip()
-    value = re.sub(r'[\u200b\u200c\u200d\u2060]', '', value)
-    value = re.sub(r'\s+', '', value)
+    value = re.sub(r'[\u200b\u200c\u200d\u2060]', '', value)  # remove invisible characters
+    value = re.sub(r'\s+', '', value)  # remove spaces
     return value
 
 SUPABASE_URL = 'https://zekvwyaaefjtjqjolsrm.supabase.co'
@@ -24,56 +24,43 @@ st.title("UPI ID Database Checker (Fast Mode)")
 uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx"])
 
 if uploaded_file:
+
     df = pd.read_excel(uploaded_file)
 
     if EXCEL_COLUMN not in df.columns:
         st.error(f"Column '{EXCEL_COLUMN}' not found in uploaded file.")
     else:
-        input_upi_ids = list(df[EXCEL_COLUMN].astype(str).apply(clean_upi))
+        input_upi_ids = set(df[EXCEL_COLUMN].astype(str).apply(clean_upi))
 
-        st.info("Fetching UPI IDs from Database (This may take time)...")
+        with st.spinner("Fetching UPI list from database (optimized SQL)..."):
+            sql_query = f"SELECT {DB_COLUMN} FROM {TABLE_NAME};"
+            db_data = supabase.rpc("execute_sql", {"query": sql_query}).execute()
 
-        all_rows = []
-        page_size = 5000
-        start = 0
-
-        progress = st.progress(0)
-
-        while True:
-            response = supabase.table(TABLE_NAME).select(DB_COLUMN).range(start, start + page_size - 1).execute()
-            data = response.data
-
-            if not data:
-                break
-
-            all_rows.extend(data)
-
-            start += page_size
-            progress.progress(min(start / 500000, 1.0))  # approximate progress
-
-            if len(data) < page_size:
-                break
-
-        progress.progress(1.0)
-
-        db_upi_ids = set(clean_upi(row[DB_COLUMN]) for row in all_rows)
-
-        not_matched = set(input_upi_ids) - db_upi_ids
-
-        st.subheader("UPI IDs NOT Found in Database:")
-        st.warning(f"Total Not Found: {len(not_matched)}")
-
-        if not_matched:
-            result_df = pd.DataFrame(list(not_matched), columns=["Not_Matched_UPI"])
-            output = BytesIO()
-            result_df.to_excel(output, index=False)
-            output.seek(0)
-
-            st.download_button(
-                label="Download Not Matched UPI List",
-                data=output,
-                file_name="notMatch_upi_ids.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        if not db_data.data:
+            st.error("Database returned no data. Check table name/permissions.")
         else:
-            st.success("All UPI IDs already exist in the database")
+            db_upi_ids = set(clean_upi(row[DB_COLUMN]) for row in db_data.data)
+
+            not_matched = input_upi_ids - db_upi_ids
+
+            st.subheader("UPI IDs NOT Found in Database:")
+
+            if not not_matched:
+                st.success("All UPI IDs are already present in the database.")
+            else:
+                st.warning(f"Total Missing: {len(not_matched)}")
+                st.dataframe(pd.DataFrame(list(not_matched), columns=["Not_Matched_UPI"]))
+
+                # Download Excel
+                result_df = pd.DataFrame(list(not_matched), columns=["Not_Matched_UPI"])
+                output = BytesIO()
+                result_df.to_excel(output, index=False)
+                output.seek(0)
+
+                st.download_button(
+                    label="⬇ Download Missing UPI List",
+                    data=output,
+                    file_name="notMatch_upi_ids.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
