@@ -14,7 +14,7 @@ def clean_upi(value):
 SUPABASE_URL = "https://zekvwyaaefjtjqjolsrm.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpla3Z3eWFhZWZqdGpxam9sc3JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNDA4NTksImV4cCI6MjA3NzgxNjg1OX0.wXT_VnXuEZ2wtHSJMR9VJAIv_mtXGQdu0jy0m9V2Gno"
 
-st.header("Import UPI Data into Supabase (Bulk Insert)")
+st.header("Import UPI Data into Database (Bulk Insert)")
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
 
 if uploaded_file:
@@ -36,7 +36,7 @@ if uploaded_file:
                 data_to_insert = df.to_dict(orient="records")
 
                 #BULK INSERT (super fast)
-                supabase.table("upi_table").insert(data_to_insert).execute()
+                supabase.table("all_upiiD").insert(data_to_insert).execute()
 
                 st.success(f"Successfully inserted {len(data_to_insert)} records into Supabase!")
             except Exception as e:
