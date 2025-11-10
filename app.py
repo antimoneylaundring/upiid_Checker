@@ -40,7 +40,7 @@ st.markdown("""
         font-family: 'Segoe UI', sans-serif !important;
         font-weight: 600 !important;
         color: #1d3557 !important;
-        font-size: 25px !important;
+        font-size: 20px !important;
         padding: 0px !important;
     }
 
@@ -85,7 +85,11 @@ st.title("UPI Database Tool")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.write("-----")
+    st.markdown(
+        "<div style='border-top: 2px solid #444; margin: 4px 0;'></div>",
+        unsafe_allow_html=True
+    )
+    
     st.header("Import UPI Ids into Database")
     uploaded_insert_file = st.file_uploader("Upload Excel File for Insert", type=["xlsx", "xls"])
 
@@ -114,7 +118,10 @@ with col1:
                     st.error(f"Error inserting data: {str(e)}")              
 
 with col2:
-    st.write("-----")
+    st.markdown(
+        "<div style='border-top: 2px solid #444; margin: 4px 0;'></div>",
+        unsafe_allow_html=True
+    )
     st.title("UPI ID Checker")
 
     uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx"])
@@ -129,7 +136,7 @@ with col2:
             input_upi_ids = set(df[EXCEL_COLUMN].astype(str).apply(clean_upi))
             input_list = list(input_upi_ids)
 
-            with st.spinner("Checking UPI IDs in database (This is fast)..."):
+            with st.spinner("Checking UPI IDs in database..."):
                 response = supabase.rpc("get_missing_upi", {"input_array": input_list}).execute()
 
             not_matched = {row["missing_upi"] for row in response.data if row["missing_upi"]}
@@ -169,7 +176,10 @@ with col2:
                 )
 
 with col3:
-    st.write("-----")    
+    st.markdown(
+        "<div style='border-top: 2px solid #444; margin: 4px 0;'></div>",
+        unsafe_allow_html=True
+    )   
     st.subheader("Check Multiple UPI IDs (Manual Input)")
 
     multi_input = st.text_area(
