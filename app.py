@@ -20,6 +20,7 @@ DB_COLUMN = "Upi_vpa"
 EXCEL_COLUMN = "Upi_vpa"
 
 st.set_page_config(page_title="UPI Checker", layout="wide")
+
 st.markdown("""
 <style>
     body {
@@ -76,6 +77,20 @@ st.markdown("""
         font-family: 'Segoe UI', sans-serif;
         font-size: 14px;
         line-height: 1.45;
+    }
+    .nav-btn {
+        display:inline-block;
+        padding: 8px 18px;
+        margin-right: 10px;
+        border-radius: 6px;
+        background:#1d3557;
+        color:white;
+        font-size:14px;
+        text-decoration:none;
+        font-weight:500;
+    }
+    .nav-btn:hover {
+        background:#457b9d;
     }
 </style>
 """, unsafe_allow_html=True)
