@@ -9,32 +9,52 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils import get_column_letter
 import streamlit.components.v1 as components
 
+st.markdown("""
+<style>
+/* REMOVE default Streamlit page centering */
+.block-container {
+    padding-top: 1rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    max-width: 100% !important;
+}
+
+/* FIX iframe shrinking issue */
+iframe {
+    width: 100% !important;
+    display: block !important;
+    margin: 0 !important;
+}
+
+/* TABLE container should be full width */
+.st-emotion-cache-1kyxreq, .st-emotion-cache-1r6slbn {
+    width: 100% !important;
+}
+
+/* REMOVE center alignment inside iframe */
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100% !important;
+    overflow-x: hidden !important;
+}
+
+/* Table itself must be 100% width */
+.excel-table {
+    width: 100% !important;
+    table-layout: fixed !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ====== SUPABASE CONFIG ======
 SUPABASE_URL = "https://zekvwyaaefjtjqjolsrm.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpla3Z3eWFhZWZqdGpxam9sc3JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNDA4NTksImV4cCI6MjA3NzgxNjg1OX0.wXT_VnXuEZ2wtHSJMR9VJAIv_mtXGQdu0jy0m9V2Gno"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-st.markdown(
-        """
-            <style>
-                /* Remove Streamlit's default sidebar/content flex property */
-                section.main > div:first-child {
-                    flex: unset !important;
-                    width: 100% !important;
-                }
-
-                /* Also prevent Streamlit components iframe from shrinking */
-                iframe {
-                    flex: unset !important;
-                    width: 100% !important;
-                }
-            </style>
-        """,
-        unsafe_allow_html=True
-    )
-
 # ====== STREAMLIT UI ======
-st.title("UPI Summary Generator")
+st.title("UPI, Bank & Website Summary")
 
 uploaded_file = st.file_uploader("Upload Excel or CSV File", type=["xlsx", "xls", "csv"])
 
@@ -195,11 +215,20 @@ if uploaded_file:
     <table class="excel-table">
         <thead>
             <tr>
+                <th colspan="13" style="background-color:#cbd5e1; 
+                                    font-size:18px; 
+                                    padding:10px; 
+                                    font-weight:700;
+                                    text-align:center;">
+                    UPI, Bank & Website Report
+                </th>
+            </tr>
+            <tr>
                 <th rowspan="2">Date</th>
                 <th rowspan="2">Total</th>
                 <th colspan="5">UPI</th>
                 <th colspan="5">Bank</th>
-                <th colspan="2" style="background-color:#cbd5e1;">Unique Website</th>
+                <th rowspan="2" style="background-color:#cbd5e1;">Unique Website</th>
             </tr>
             <tr>
                 <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
@@ -231,8 +260,10 @@ if uploaded_file:
     html_table += "</tbody></table>"
 
     # Proper HTML rendering (important!)
-    # st.markdown(html_table, unsafe_allow_html=True)
-    components.html(html_table, height=400, scrolling=True)
+    # components.html(html_table, height=400, scrolling=True)
+    components.html(f"<div style='width:100%'>{html_table}</div>", 
+                height=450, 
+                scrolling=True)
 
     # --- Create formatted Excel output ---
     output = BytesIO()
