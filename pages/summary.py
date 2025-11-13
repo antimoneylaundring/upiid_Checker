@@ -166,75 +166,95 @@ if uploaded_file:
             "UPI_New_%": f"{(new_upi_today / unique_upi * 100):.0f}%" if unique_upi else "0%",
             "Bank_Total": total_bank,
             "Bank_Unique": unique_bank,
-            "Bank_%": f"{(unique_bank / total_bank * 100):.2f}%" if total_bank else "0%",
+            "Bank_%": f"{(unique_bank / total_bank * 100):.0f}%" if total_bank else "0%",
             "Bank_New": bank_new_today,
             "Bank_New_%": f"{(bank_new_today / unique_bank * 100):.0f}%" if unique_bank else "0%",
             "unique_website": unique_website
         })
 
     summary_df = pd.DataFrame(summary_data)
-
-    # --- Show summary ---
-    # st.subheader("Summary Report")
-    # st.dataframe(summary_df)
     
     st.subheader("📊 Summary Report")
 
     # Create styled HTML table
     html_table = """
-    <style>
+        <style>
+        .table-container {
+            width: 100%;
+            overflow-x: auto;
+            margin: 0;
+            padding: 0;
+        }
+
         .excel-table {
+            border-collapse: collapse;
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 15px;
+            width: 100% !important;
+            table-layout: fixed !important;
+        }
+
+        table.excel-table {
             width: 100%;
             border-collapse: collapse;
             font-family: 'Segoe UI', sans-serif;
             font-size: 15px;
-            margin-top: 10px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-            border-radius: 6px;
-            overflow: hidden;
+            min-width: 1400px;  /* prevents header misalignment */
         }
+
         .excel-table th, .excel-table td {
             border: 1px solid #ccc;
             text-align: center;
-            padding: 8px 10px;
+            padding: 8px 0px !important;;
+            white-space: nowrap;
+            white-space: normal !important;
+            word-wrap: break-word !important;
         }
+
         .excel-table thead tr:first-child th {
+            background-color: #cbd5e1;
+            font-size: 18px;
+            font-weight: 700;
+            padding: 10px;
+        }
+
+        .excel-table thead tr:nth-child(2) th {
             background-color: #cbd5e1;
             font-size: 16px;
             font-weight: 600;
         }
-        .excel-table thead tr:nth-child(2) th {
+
+        .excel-table thead tr:nth-child(3) th {
             background-color: #e2e8f0;
             font-weight: 500;
         }
+
         .excel-table td {
             background-color: #f8fafc;
         }
     </style>
 
+    <div class="table-container">
     <table class="excel-table">
         <thead>
             <tr>
-                <th colspan="13" style="background-color:#cbd5e1; 
-                                    font-size:18px; 
-                                    padding:10px; 
-                                    font-weight:700;
-                                    text-align:center;">
-                    UPI, Bank & Website Report
-                </th>
+                <th colspan="13">UPI, Bank & Website Report</th>
             </tr>
+
             <tr>
                 <th rowspan="2">Date</th>
                 <th rowspan="2">Total</th>
                 <th colspan="5">UPI</th>
                 <th colspan="5">Bank</th>
-                <th rowspan="2" style="background-color:#cbd5e1;">Unique Website</th>
+                <th rowspan="2">Unique Website</th>
             </tr>
+
             <tr>
                 <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
                 <th>Total bank</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
             </tr>
         </thead>
+
         <tbody>
     """
 
@@ -248,22 +268,33 @@ if uploaded_file:
                 <td>{row['UPI_%']}</td>
                 <td>{row['UPI_New']}</td>
                 <td>{row['UPI_New_%']}</td>
+
                 <td>{row['Bank_Total']}</td>
                 <td>{row['Bank_Unique']}</td>
                 <td>{row['Bank_%']}</td>
                 <td>{row['Bank_New']}</td>
                 <td>{row['Bank_New_%']}</td>
+
                 <td>{row['unique_website']}</td>
             </tr>
         """
 
-    html_table += "</tbody></table>"
+    html_table += "</tbody></table></div>"
 
     # Proper HTML rendering (important!)
-    # components.html(html_table, height=400, scrolling=True)
-    components.html(f"<div style='width:100%'>{html_table}</div>", 
-                height=450, 
-                scrolling=True)
+    # components.html(html_table, height=380, scrolling=True)
+    # components.html(f"<div style='width:100%; margin:0; padding:0;'>{html_table}</div>", 
+    #             height=450, 
+    #             scrolling=True)
+    components.html(
+        f"""
+        <div style='width:100%; margin:0; padding:0;'>
+                {html_table}
+        </div>
+        """,
+        height=450,
+        scrolling=True
+    )
 
     # --- Create formatted Excel output ---
     output = BytesIO()
@@ -294,10 +325,6 @@ if uploaded_file:
     wb.save(output)
     output.seek(0)
 
-    # --- Download button ---
-    # output = BytesIO()
-    # summary_df.to_excel(output, index=False)
-    # output.seek(0)
     st.download_button(
         label="Download Summary Excel",
         data=output,
