@@ -135,7 +135,7 @@ if uploaded_file:
         Unique_UPI=("Upi_vpa_clean", pd.Series.nunique),
         Bank_Total=("Bank_acc_clean", "count"),
         Bank_Unique=("Bank_acc_clean", pd.Series.nunique),
-        unique_website = ('Website_url', 'count')
+        unique_website = ('Website_url', pd.Series.nunique)
     ).reset_index()
 
     # --- Build summary ---
@@ -189,73 +189,82 @@ if uploaded_file:
         .excel-table {
             border-collapse: collapse;
             font-family: 'Segoe UI', sans-serif;
-            font-size: 15px;
+            font-size: 13px;  /* Reduced from 15px */
             width: 100% !important;
             table-layout: fixed !important;
-        }
-
-        table.excel-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-family: 'Segoe UI', sans-serif;
-            font-size: 15px;
-            min-width: 1400px;  /* prevents header misalignment */
+            min-width: unset;  /* Remove min-width constraint */
         }
 
         .excel-table th, .excel-table td {
             border: 1px solid #ccc;
             text-align: center;
-            padding: 8px 0px !important;;
-            white-space: nowrap;
+            padding: 6px 4px !important;  /* Reduced padding */
             white-space: normal !important;
             word-wrap: break-word !important;
+            overflow: hidden;
         }
+
+        /* Specific column widths for better control */
+        .excel-table th:nth-child(1), .excel-table td:nth-child(1) { width: 8%; }   /* Date */
+        .excel-table th:nth-child(2), .excel-table td:nth-child(2) { width: 5%; }   /* Total */
+        .excel-table th:nth-child(3), .excel-table td:nth-child(3) { width: 5%; }   /* UPI Total */
+        .excel-table th:nth-child(4), .excel-table td:nth-child(4) { width: 6%; }   /* UPI Unique */
+        .excel-table th:nth-child(5), .excel-table td:nth-child(5) { width: 4%; }   /* UPI % */
+        .excel-table th:nth-child(6), .excel-table td:nth-child(6) { width: 5%; }   /* UPI New */
+        .excel-table th:nth-child(7), .excel-table td:nth-child(7) { width: 4%; }   /* UPI New % */
+        .excel-table th:nth-child(8), .excel-table td:nth-child(8) { width: 7%; }   /* Bank Total */
+        .excel-table th:nth-child(9), .excel-table td:nth-child(9) { width: 6%; }   /* Bank Unique */
+        .excel-table th:nth-child(10), .excel-table td:nth-child(10) { width: 4%; } /* Bank % */
+        .excel-table th:nth-child(11), .excel-table td:nth-child(11) { width: 5%; } /* Bank New */
+        .excel-table th:nth-child(12), .excel-table td:nth-child(12) { width: 4%; } /* Bank New % */
+        .excel-table th:nth-child(13), .excel-table td:nth-child(13) { width: 8%; } /* Unique Website */
 
         .excel-table thead tr:first-child th {
             background-color: #cbd5e1;
-            font-size: 18px;
+            font-size: 16px;  /* Reduced from 18px */
             font-weight: 700;
-            padding: 10px;
+            padding: 8px;
         }
 
         .excel-table thead tr:nth-child(2) th {
             background-color: #cbd5e1;
-            font-size: 16px;
+            font-size: 14px;  /* Reduced from 16px */
             font-weight: 600;
         }
 
         .excel-table thead tr:nth-child(3) th {
             background-color: #e2e8f0;
             font-weight: 500;
+            font-size: 12px;  /* Added smaller font for headers */
         }
 
         .excel-table td {
             background-color: #f8fafc;
         }
-    </style>
+        </style>
 
-    <div class="table-container">
-    <table class="excel-table">
-        <thead>
-            <tr>
-                <th colspan="13">UPI, Bank & Website Report</th>
-            </tr>
+        <div class="table-container">
+        <table class="excel-table">
+            <thead>
+                <tr>
+                    <th colspan="13">UPI, Bank & Website Report</th>
+                </tr>
 
-            <tr>
-                <th rowspan="2">Date</th>
-                <th rowspan="2">Total</th>
-                <th colspan="5">UPI</th>
-                <th colspan="5">Bank</th>
-                <th rowspan="2">Unique Website</th>
-            </tr>
+                <tr>
+                    <th rowspan="2">Date</th>
+                    <th rowspan="2">Total</th>
+                    <th colspan="5">UPI</th>
+                    <th colspan="5">Bank</th>
+                    <th rowspan="2">Unique Website</th>
+                </tr>
 
-            <tr>
-                <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
-                <th>Total bank</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
-            </tr>
-        </thead>
+                <tr>
+                    <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
+                    <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
+                </tr>
+            </thead>
 
-        <tbody>
+            <tbody>
     """
 
     for _, row in summary_df.iterrows():
@@ -268,30 +277,20 @@ if uploaded_file:
                 <td>{row['UPI_%']}</td>
                 <td>{row['UPI_New']}</td>
                 <td>{row['UPI_New_%']}</td>
-
                 <td>{row['Bank_Total']}</td>
                 <td>{row['Bank_Unique']}</td>
                 <td>{row['Bank_%']}</td>
                 <td>{row['Bank_New']}</td>
                 <td>{row['Bank_New_%']}</td>
-
                 <td>{row['unique_website']}</td>
             </tr>
         """
 
     html_table += "</tbody></table></div>"
 
-    # Proper HTML rendering (important!)
-    # components.html(html_table, height=380, scrolling=True)
-    # components.html(f"<div style='width:100%; margin:0; padding:0;'>{html_table}</div>", 
-    #             height=450, 
-    #             scrolling=True)
+    # Render the HTML
     components.html(
-        f"""
-        <div style='width:100%; margin:0; padding:0;'>
-                {html_table}
-        </div>
-        """,
+        html_table,
         height=450,
         scrolling=True
     )
