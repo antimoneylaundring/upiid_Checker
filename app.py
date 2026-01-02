@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import re
 from supabase import create_client, Client
+import datetime
 
 SUPABASE_URL = "https://zekvwyaaefjtjqjolsrm.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpla3Z3eWFhZWZqdGpxam9sc3JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNDA4NTksImV4cCI6MjA3NzgxNjg1OX0.wXT_VnXuEZ2wtHSJMR9VJAIv_mtXGQdu0jy0m9V2Gno"
@@ -58,11 +59,6 @@ def find_required_columns(df_cols, required_list):
             else:
                 missing.append(req)
     return found, missing
-
-
-# ============================================================================
-# IMPORT FUNCTIONS
-# ============================================================================
 
 def upsert_chunk(data_chunk, table_name, on_conflict):
     return supabase.table(table_name).upsert(data_chunk, on_conflict=on_conflict).execute()
@@ -207,12 +203,36 @@ with col1:
         df_clean[key_col] = df_clean[key_col].astype(str).str.strip()
         df_clean = df_clean.drop_duplicates(subset=[key_col])
         
+        # --------------------------
+        # INSERTED_DATE NORMALIZE & TODAY CHECK (ADDED)
+        # --------------------------
         if "Inserted_date" in df_clean.columns:
             try:
-                df_clean["Inserted_date"] = pd.to_datetime(df_clean["Inserted_date"], errors="coerce")
-                df_clean["Inserted_date"] = df_clean["Inserted_date"].dt.strftime("%Y-%m-%d")
+                # convert to YYYY-MM-DD (string)
+                df_clean["Inserted_date"] = pd.to_datetime(df_clean["Inserted_date"], errors="coerce").dt.strftime("%Y-%m-%d")
             except Exception:
+                # if conversion fails, leave as-is
                 pass
+
+            # Today's date in ISO format (YYYY-MM-DD)
+            today_str = datetime.date.today().isoformat()
+            today_mask = df_clean["Inserted_date"] == today_str
+            today_count = int(today_mask.sum())
+
+            if today_count > 0:
+                st.warning(f"⚠️ {today_count} row(s) contain today's date ({today_str}).")
+                st.write("If you don't want rows with today's date to be imported, select the checkbox below to remove them and continue.")
+                remove_today = st.checkbox("Remove rows with today's date and continue import", value=False, key="remove_today")
+
+                if remove_today:
+                    df_clean = df_clean[~today_mask].copy()
+                    st.info(f"✅ Removed {today_count} row(s) with today's date. Remaining rows: {len(df_clean)}")
+                else:
+                    st.error("⛔ Import stopped because file contains rows with today's date. Select the checkbox to remove them and continue.")
+                    st.stop()
+        # --------------------------
+        # END OF DATE CHECK
+        # --------------------------
         
         records = df_clean.to_dict(orient="records")
         
