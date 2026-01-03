@@ -243,7 +243,7 @@ with col1:
         with col_chunk:
             chunk_default = st.number_input("Chunk size", min_value=1, max_value=5000, value=1000, step=100)
         with col_retries:
-            retries = st.number_input("Max retries", min_value=0, max_value=5, value=3)
+            retries = st.number_input("Max retries", min_value=0, max_value=100, value=3)
         
         btn = st.button("🚀 Start Import", use_container_width=True)
         
