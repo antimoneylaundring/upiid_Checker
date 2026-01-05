@@ -70,9 +70,9 @@ if uploaded_file:
 
     # ---------- LOAD FILE ----------
     if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
+        df = pd.read_csv(uploaded_file, dtype=str)
     else:
-        df = pd.read_excel(uploaded_file)
+        df = pd.read_excel(uploaded_file, dtype=str)
 
     df.columns = df.columns.str.strip()
     st.success(f"File Loaded: {uploaded_file.name}")
@@ -91,7 +91,7 @@ if uploaded_file:
     # ---------- FILTER ----------
     filtered_df = df[
         (df["Feature_type"].astype(str).str.strip() == "BS Money Laundering") &
-        (df["Approvd_status"] == 1) &
+        (df["Approvd_status"].astype(str).str.strip() == "1") &
         (df["Input_user"].astype(str).str.strip().str.lower() != "automated") &
         (df["Search_for"].astype(str).str.strip().isin(["App", "Web"])) &
         (df["Upi_bank_account_wallet"].astype(str).str.strip().isin(["UPI", "Bank Account"]))
@@ -108,19 +108,35 @@ if uploaded_file:
         if pd.isna(x):
             return None
         return str(x).strip().lower().replace(" ", "")
+    
+    def clean_bank_val(x):
+        if pd.isna(x):
+            return None
+        return str(x)
 
     filtered_df["Upi_vpa_clean"] = filtered_df["Upi_vpa"].apply(clean_val)
-    filtered_df["Bank_acc_clean"] = filtered_df["Bank_account_number"].apply(clean_val)
+    filtered_df["Bank_acc_clean"] = filtered_df["Bank_account_number"].apply(clean_bank_val)
     filtered_df["Website_url"] = filtered_df["Website_url"].apply(clean_val)
     filtered_df["Inserted_date"] = pd.to_datetime(filtered_df["Inserted_date"], errors="coerce").dt.date
 
+    upi_df = filtered_df[
+        (filtered_df["Upi_bank_account_wallet"].astype(str).str.strip().str.lower() == "upi") &
+        (filtered_df["Input_user"].astype(str).str.strip().str.lower() != "automated") &
+        (filtered_df["Approvd_status"].astype(str).str.strip() == "1") &
+        (filtered_df["Feature_type"].astype(str).str.strip() == "BS Money Laundering")
+    ].copy()
+
+
     # ---------- BANK ACCOUNT ONLY DF (NEW) ----------
     bank_df = filtered_df[
-        filtered_df["Upi_bank_account_wallet"].astype(str).str.strip() == "Bank Account"
+        (filtered_df["Upi_bank_account_wallet"].astype(str).str.strip() == "Bank Account") &
+        (filtered_df["Input_user"].astype(str).str.strip().str.lower() != "automated") &
+        (filtered_df["Approvd_status"].astype(str).str.strip() == "1") &
+        (filtered_df["Feature_type"].astype(str).str.strip() == "BS Money Laundering")
     ].copy()
 
     # ---------- FETCH EXISTING UPIs ----------
-    all_upis = filtered_df["Upi_vpa_clean"].dropna().unique().tolist()
+    all_upis = upi_df["Upi_vpa_clean"].dropna().unique().tolist()
     existing_upis = set()
 
     for i in range(0, len(all_upis), 1000):
@@ -132,14 +148,18 @@ if uploaded_file:
     not_found_upis = set(all_upis) - existing_upis
 
     # ---------- FETCH EXISTING BANKS ----------
-    all_banks = bank_df["Bank_acc_clean"].dropna().unique().tolist()
+    all_banks = bank_df["Bank_acc_clean"].dropna().astype(str).unique().tolist()
+    print(all_banks)
     existing_banks = set()
 
     for i in range(0, len(all_banks), 1000):
         batch = all_banks[i:i+1000]
         data = supabase.table("all_bank_acc").select("Bank_account_number").in_("Bank_account_number", batch).execute()
         if data.data:
-            existing_banks.update(d["Bank_account_number"].strip().lower() for d in data.data)
+            # existing_banks.update(d["Bank_account_number"].strip().lower() for d in data.data)
+            existing_banks.update(
+                str(d["Bank_account_number"]) for d in data.data
+            )
 
     not_found_banks = set(all_banks) - existing_banks
 
