@@ -1,337 +1,392 @@
 import streamlit as st
 import pandas as pd
-from datetime import timedelta
-from io import BytesIO
+import time
+import re
 from supabase import create_client, Client
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils import get_column_letter
-import streamlit.components.v1 as components
+import datetime
 
-st.markdown("""
-<style>
-/* REMOVE default Streamlit page centering */
-.block-container {
-    padding-top: 1rem !important;
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
-    max-width: 100% !important;
-}
-
-/* FIX iframe shrinking issue */
-iframe {
-    width: 100% !important;
-    display: block !important;
-    margin: 0 !important;
-}
-
-/* TABLE container should be full width */
-.st-emotion-cache-1kyxreq, .st-emotion-cache-1r6slbn {
-    width: 100% !important;
-}
-
-/* REMOVE center alignment inside iframe */
-html, body {
-    margin: 0;
-    padding: 0;
-    width: 100% !important;
-    overflow-x: hidden !important;
-}
-
-/* Table itself must be 100% width */
-.excel-table {
-    width: 100% !important;
-    table-layout: fixed !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-
-# ====== SUPABASE CONFIG ======
 SUPABASE_URL = "https://zekvwyaaefjtjqjolsrm.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpla3Z3eWFhZWZqdGpxam9sc3JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNDA4NTksImV4cCI6MjA3NzgxNjg1OX0.wXT_VnXuEZ2wtHSJMR9VJAIv_mtXGQdu0jy0m9V2Gno"
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ====== STREAMLIT UI ======
-st.title("UPI, Bank & Website Summary")
 
-uploaded_file = st.file_uploader("Upload Excel or CSV File", type=["xlsx", "xls", "csv"])
+st.set_page_config(page_title="UPI/Bank Import & Check", layout="wide")
 
-if uploaded_file:
-    # --- Load file ---
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+# Table options and their required columns + conflict column
+TABLE_OPTIONS = {
+    "UPI": {
+        "table_name": "all_upiiD",
+        "required": ["Upi_vpa", "Inserted_date"],
+        "conflict_col": "Upi_vpa"
+    },
+    "Bank Account": {
+        "table_name": "all_bank_acc",
+        "required": ["Bank_account_number", "Inserted_date"],
+        "conflict_col": "Bank_account_number"
+    }
+}
 
-    st.success(f"File Loaded: {uploaded_file.name}")
-    df.columns = df.columns.str.strip()
+def normalize_colname(name: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', str(name).lower())
 
-    # --- Validate required columns ---
-    required_cols = ["Feature_type", "Approvd_status", "Input_user", "Inserted_date", "Website_url", "Upi_vpa", "Bank_account_number"]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        st.error(f"Missing columns: {missing}")
-        st.stop()
 
-    # --- Apply filter conditions ---
-    filtered_df = df[
-        (df["Feature_type"].astype(str).str.strip() == "BS Money Laundering") &
-        (df["Approvd_status"] == 1) &
-        (df["Input_user"].astype(str).str.strip().str.lower() != "automated") &
-        (df["Search_for"].astype(str).str.strip().isin(["App", "Web"])) & 
-        (df["Upi_bank_account_wallet"].astype(str).str.strip().isin(["UPI", "Bank Account"]))
-    ].copy()
+def map_columns(df_columns):
+    mapping = {}
+    for col in df_columns:
+        mapping[normalize_colname(col)] = col
+    return mapping
 
-    if filtered_df.empty:
-        st.warning("No records found after applying filter conditions.")
-        st.stop()
 
-    st.info(f"{len(filtered_df)} rows matched filter conditions")
+def find_required_columns(df_cols, required_list):
+    mapping = map_columns(df_cols)
+    found = {}
+    missing = []
+    for req in required_list:
+        norm_req = normalize_colname(req)
+        if norm_req in mapping:
+            found[req] = mapping[norm_req]
+        else:
+            parts = re.split(r'[^a-z0-9]+', req.lower())
+            matched = None
+            for dfcol in df_cols:
+                n = normalize_colname(dfcol)
+                if all(p for p in parts if p and p in n):
+                    matched = dfcol
+                    break
+            if matched:
+                found[req] = matched
+            else:
+                missing.append(req)
+    return found, missing
 
-    # --- Clean UPI values ---
-    def clean_val(x):
-        if pd.isna(x):
-            return None
-        return str(x).strip().lower().replace(" ", "")
+def upsert_chunk(data_chunk, table_name, on_conflict):
+    return supabase.table(table_name).upsert(data_chunk, on_conflict=on_conflict).execute()
 
-    filtered_df["Upi_vpa_clean"] = filtered_df["Upi_vpa"].apply(clean_val)
-    filtered_df["Bank_acc_clean"] = filtered_df["Bank_account_number"].apply(clean_val)
-    filtered_df["Inserted_date"] = pd.to_datetime(filtered_df["Inserted_date"], errors="coerce").dt.date
-    filtered_df['Website_url'] = filtered_df['Website_url'].apply(clean_val)
 
-    # --- Fetch all UPIs from Supabase ---
-    all_upis = list(filtered_df["Upi_vpa_clean"].dropna().unique())
+def import_with_retries(records,
+                        table_name,
+                        on_conflict,
+                        initial_chunk_size=1000,
+                        max_retries=3,
+                        backoff_seconds=2):
+    total = len(records)
+    if total == 0:
+        return {"inserted": 0, "errors": []}
 
-    if all_upis:
-        # Fetch all existing UPIs from Supabase
-        existing_upis = set()
-        for i in range(0, len(all_upis), 1000):  # batching
-            batch = all_upis[i:i+1000]
-            data = supabase.table("all_upiiD").select("Upi_vpa").in_("Upi_vpa", batch).execute()
-            if data.data:
-                existing_upis.update({d["Upi_vpa"].strip().lower() for d in data.data if d.get("Upi_vpa")})
+    chunk_size = initial_chunk_size
+    inserted = 0
+    errors = []
+
+    idx = 0
+    while idx < total:
+        chunk = records[idx: idx + chunk_size]
+        attempt = 0
+        success = False
+
+        while attempt <= max_retries and not success:
+            try:
+                res = upsert_chunk(chunk, table_name, on_conflict=on_conflict)
+                if hasattr(res, "status_code") and getattr(res, "status_code") >= 400:
+                    raise Exception(f"HTTP {res.status_code} - {getattr(res, 'data', '')}")
+                inserted += len(chunk)
+                success = True
+            except Exception as e:
+                msg = str(e)
+                if "57014" in msg or "canceling statement due to statement timeout" in msg.lower():
+                    attempt += 1
+                    st.warning(f"Chunk size {chunk_size} timed out. Attempt {attempt}/{max_retries}. Reducing chunk size.")
+                    new_chunk_size = max(1, chunk_size // 2)
+                    if new_chunk_size < chunk_size:
+                        chunk_size = new_chunk_size
+                        st.info(f"New chunk size: {chunk_size}")
+                    else:
+                        time.sleep(backoff_seconds * attempt)
+                else:
+                    errors.append({"index": idx, "error": msg})
+                    st.error(f"Error inserting chunk at index {idx}: {msg}")
+                    success = True
+            if not success:
+                time.sleep(backoff_seconds * (2 ** (attempt - 1)) if attempt > 0 else backoff_seconds)
+
+        idx += chunk_size
+
+    return {"inserted": inserted, "errors": errors}
+
+
+# ============================================================================
+# CHECK FUNCTIONS (NEW)
+# ============================================================================
+
+def check_id_in_db(id_value: str, table_name: str, search_column: str) -> dict:
+    try:
+        response = supabase.table(table_name).select("*").eq(search_column, id_value.strip()).execute()
         
-        # Now find UPIs NOT found in Supabase (i.e. new)
-        not_found_upis = set(all_upis) - existing_upis
-    else:
-        not_found_upis = set()
-    
-    # --- Fetch existing Banks from Supabase ---
-    all_banks = list(filtered_df["Bank_acc_clean"].dropna().unique())
-    not_found_banks = set()
-    if all_banks:
-        existing_banks = set()
-        for i in range(0, len(all_banks), 1000):
-            batch = all_banks[i:i+1000]
-            data = supabase.table("all_bank_acc").select("Bank_account_number").in_("Bank_account_number", batch).execute()
-            if data.data:
-                existing_banks.update({d["Bank_account_number"].strip().lower() for d in data.data if d.get("Bank_account_number")})
-        not_found_banks = set(all_banks) - existing_banks
+        if response.data and len(response.data) > 0:
+            return {
+                "exists": True,
+                "record": response.data[0],
+                "error": None
+            }
+        else:
+            return {
+                "exists": False,
+                "record": None,
+                "error": None
+            }
+    except Exception as e:
+        return {
+            "exists": False,
+            "record": None,
+            "error": str(e)
+        }
 
-    # --- Group by date ---
-    grouped = filtered_df.groupby("Inserted_date").agg(
-        website_total =('Id', 'count'),
-        Total_UPI=("Upi_vpa_clean", "count"),
-        Unique_UPI=("Upi_vpa_clean", pd.Series.nunique),
-        Bank_Total=("Bank_acc_clean", "count"),
-        Bank_Unique=("Bank_acc_clean", pd.Series.nunique),
-        unique_website = ('Website_url', pd.Series.nunique)
-    ).reset_index()
 
-    # --- Build summary ---
-    summary_data = []
-
-    for _, row in grouped.iterrows():
-        date = row["Inserted_date"]
-        website_total = row['website_total']
-        total_upi = row["Total_UPI"]
-        unique_upi = row["Unique_UPI"]
-        unique_website = row['unique_website']
-
-        # Count how many UPIs from this date are new
-        date_upis = set(filtered_df.loc[filtered_df["Inserted_date"] == date, "Upi_vpa_clean"])
-        new_upi_today = len(date_upis & not_found_upis)
-
-        total_bank = row["Bank_Total"]
-        unique_bank = row["Bank_Unique"]
-        bank_new_today = len(set(filtered_df.loc[filtered_df["Inserted_date"] == date, "Bank_acc_clean"]) & not_found_banks)
-
-        summary_data.append({
-            "Date": date,
-            "Total": website_total,
-            "UPI_Total": total_upi,
-            "UPI_Unique": unique_upi,
-            "UPI_%": f"{(unique_upi / total_upi * 100):.0f}%" if total_upi else "0%",
-            "UPI_New": new_upi_today,
-            "UPI_New_%": f"{(new_upi_today / unique_upi * 100):.0f}%" if unique_upi else "0%",
-            "Bank_Total": total_bank,
-            "Bank_Unique": unique_bank,
-            "Bank_%": f"{(unique_bank / total_bank * 100):.0f}%" if total_bank else "0%",
-            "Bank_New": bank_new_today,
-            "Bank_New_%": f"{(bank_new_today / unique_bank * 100):.0f}%" if unique_bank else "0%",
-            "unique_website": unique_website
+def check_ids_batch(ids_list: list, table_name: str, search_column: str) -> pd.DataFrame:
+    results = []
+    for id_val in ids_list:
+        check_result = check_id_in_db(id_val, table_name, search_column)
+        results.append({
+            "ID": id_val,
+            "Exists": "✅ Yes" if check_result["exists"] else "❌ No",
+            "Status": check_result["error"] if check_result["error"] else "Found" if check_result["exists"] else "Not Found"
         })
+    return pd.DataFrame(results)
 
-    summary_df = pd.DataFrame(summary_data)
+
+# ============================================================================
+# MAIN UI: TWO-COLUMN LAYOUT
+# ============================================================================
+
+col1, col2 = st.columns(2, gap="large")
+
+# ============================================================================
+# COLUMN 1: IMPORT FUNCTIONALITY
+# ============================================================================
+with col1:
+    st.header("📥 Import IDs")
+    st.markdown("**Upload CSV file and import data into database**")
     
-    st.subheader("📊 Summary Report")
+    target_label = st.selectbox("Select target to import", list(TABLE_OPTIONS.keys()), key="import_target")
+    target_cfg = TABLE_OPTIONS[target_label]
+    TABLE_NAME = target_cfg["table_name"]
+    REQUIRED_COLS = target_cfg["required"]
+    CONFLICT_COL = target_cfg["conflict_col"]
+    
+    st.markdown(f"**Target table:** `{TABLE_NAME}`")
+    
+    uploaded_file = st.file_uploader("Upload CSV file", type=["csv", "txt"], key="import_file")
+    
+    if uploaded_file:
+        try:
+            df = pd.read_csv(uploaded_file, dtype=str)
+            # print(f"Uploaded columns: {df.columns.tolist()}")
+            
+        except Exception as e:
+            st.error(f"Could not read CSV: {e}")
+            st.stop()
+        
+        
+        mask = (
+            (df["Feature_type"].astype(str).str.strip() == "BS Money Laundering") &
+            (df["Upi_bank_account_wallet"].astype(str).str.strip().isin(["UPI"])) &
+            (df["Search_for"].astype(str).str.strip().isin(["App", "Web"]))
+            # (~df["Input_user"].astype(str).str.contains("icuser", case=False, na=False))
+        )
 
-    # Create styled HTML table
-    html_table = """
-        <style>
-        .table-container {
-            width: 100%;
-            overflow-x: auto;
-            margin: 0;
-            padding: 0;
-        }
+        filtered_df = df[mask].copy()
+        
+        found_cols_map, missing = find_required_columns(filtered_df.columns.tolist(), REQUIRED_COLS)
+        print(f"Found columns map: {found_cols_map}")
+        if missing:
+            st.error(f"CSV must contain columns: {', '.join(missing)}")
+            st.stop()
+        
+        actual_cols = [found_cols_map[c] for c in REQUIRED_COLS]
+        df_clean = filtered_df[actual_cols].copy()
+        # print(f"Found columns mapping: {df_clean}")
+        rename_map = {found_cols_map[c]: c for c in REQUIRED_COLS}
+        df_clean = df_clean.rename(columns=rename_map)
+        
+        key_col = CONFLICT_COL
+        if key_col not in df_clean.columns:
+            st.error(f"Internal error: expected key column '{key_col}' not found.")
+            st.stop()
+        
+        df_clean = df_clean.dropna(subset=[key_col])
+        df_clean[key_col] = df_clean[key_col].astype(str).str.strip()
+        if key_col.lower() == "upi_vpa".lower():
+            df_clean[key_col] = df_clean[key_col].str.lower()
+        # remove empty strings after strip
+        df_clean = df_clean[df_clean[key_col] != ""]
+        df_clean = df_clean.drop_duplicates(subset=[key_col])
+        
+        # --------------------------
+        # INSERTED_DATE NORMALIZE & TODAY CHECK (ADDED)
+        # --------------------------
+        if "Inserted_date" in df_clean.columns:
+            try:
+                # convert to YYYY-MM-DD (string)
+                df_clean["Inserted_date"] = pd.to_datetime(df_clean["Inserted_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+            except Exception:
+                # if conversion fails, leave as-is
+                pass
 
-        .excel-table {
-            border-collapse: collapse;
-            font-family: 'Segoe UI', sans-serif;
-            font-size: 13px;  /* Reduced from 15px */
-            width: 100% !important;
-            table-layout: fixed !important;
-            min-width: unset;  /* Remove min-width constraint */
-        }
+            # Today's date in ISO format (YYYY-MM-DD)
+            today_str = datetime.date.today().isoformat()
+            today_mask = df_clean["Inserted_date"] == today_str
+            today_count = int(today_mask.sum())
 
-        .excel-table th, .excel-table td {
-            border: 1px solid #ccc;
-            text-align: center;
-            padding: 6px 4px !important;  /* Reduced padding */
-            white-space: normal !important;
-            word-wrap: break-word !important;
-            overflow: hidden;
-        }
+            if today_count > 0:
+                st.warning(f"⚠️ {today_count} row(s) contain today's date ({today_str}).")
+                st.write("If you don't want rows with today's date to be imported, select the checkbox below to remove them and continue.")
+                remove_today = st.checkbox("Remove rows with today's date and continue import", value=False, key="remove_today")
 
-        /* Specific column widths for better control */
-        .excel-table th:nth-child(1), .excel-table td:nth-child(1) { width: 8%; }   /* Date */
-        .excel-table th:nth-child(2), .excel-table td:nth-child(2) { width: 5%; }   /* Total */
-        .excel-table th:nth-child(3), .excel-table td:nth-child(3) { width: 5%; }   /* UPI Total */
-        .excel-table th:nth-child(4), .excel-table td:nth-child(4) { width: 6%; }   /* UPI Unique */
-        .excel-table th:nth-child(5), .excel-table td:nth-child(5) { width: 4%; }   /* UPI % */
-        .excel-table th:nth-child(6), .excel-table td:nth-child(6) { width: 5%; }   /* UPI New */
-        .excel-table th:nth-child(7), .excel-table td:nth-child(7) { width: 4%; }   /* UPI New % */
-        .excel-table th:nth-child(8), .excel-table td:nth-child(8) { width: 7%; }   /* Bank Total */
-        .excel-table th:nth-child(9), .excel-table td:nth-child(9) { width: 6%; }   /* Bank Unique */
-        .excel-table th:nth-child(10), .excel-table td:nth-child(10) { width: 4%; } /* Bank % */
-        .excel-table th:nth-child(11), .excel-table td:nth-child(11) { width: 5%; } /* Bank New */
-        .excel-table th:nth-child(12), .excel-table td:nth-child(12) { width: 4%; } /* Bank New % */
-        .excel-table th:nth-child(13), .excel-table td:nth-child(13) { width: 8%; } /* Unique Website */
+                if remove_today:
+                    df_clean = df_clean[~today_mask].copy()
+                    st.info(f"✅ Removed {today_count} row(s) with today's date. Remaining rows: {len(df_clean)}")
+                else:
+                    st.error("⛔ Import stopped because file contains rows with today's date. Select the checkbox to remove them and continue.")
+                    st.stop()
+        # --------------------------
+        # END OF DATE CHECK
+        # --------------------------
+        
+        records = df_clean.to_dict(orient="records")
+        
+        st.info(f"✅ Prepared {len(records)} unique records to import")
+        st.dataframe(df_clean.head(10), use_container_width=True)
+        
+        col_chunk, col_retries = st.columns(2)
+        with col_chunk:
+            chunk_default = st.number_input("Chunk size", min_value=1, max_value=5000, value=1000, step=100)
+        with col_retries:
+            retries = st.number_input("Max retries", min_value=0, max_value=100, value=3)
+        
+        btn = st.button("🚀 Start Import", use_container_width=True)
+        
+        if btn:
+            with st.spinner("Importing..."):
+                result = import_with_retries(records,
+                                             TABLE_NAME,
+                                             on_conflict=CONFLICT_COL,
+                                             initial_chunk_size=int(chunk_default),
+                                             max_retries=int(retries),
+                                             backoff_seconds=2)
+                st.success(f"✅ Done! Processed: {result['inserted']} records")
+                if result["errors"]:
+                    st.error(f"⚠️ {len(result['errors'])} chunk errors")
+                    st.json(result["errors"])
+                else:
+                    st.info("✅ No errors reported")
 
-        .excel-table thead tr:first-child th {
-            background-color: #cbd5e1;
-            font-size: 16px;  /* Reduced from 18px */
-            font-weight: 700;
-            padding: 8px;
-        }
-
-        .excel-table thead tr:nth-child(2) th {
-            background-color: #cbd5e1;
-            font-size: 14px;  /* Reduced from 16px */
-            font-weight: 600;
-        }
-
-        .excel-table thead tr:nth-child(3) th {
-            background-color: #e2e8f0;
-            font-weight: 500;
-            font-size: 12px;  /* Added smaller font for headers */
-        }
-
-        .excel-table td {
-            background-color: #f8fafc;
-        }
-        </style>
-
-        <div class="table-container">
-        <table class="excel-table">
-            <thead>
-                <tr>
-                    <th colspan="13">UPI, Bank & Website Report</th>
-                </tr>
-
-                <tr>
-                    <th rowspan="2">Date</th>
-                    <th rowspan="2">Total</th>
-                    <th colspan="5">UPI</th>
-                    <th colspan="5">Bank</th>
-                    <th rowspan="2">Unique Website</th>
-                </tr>
-
-                <tr>
-                    <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
-                    <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
-                </tr>
-            </thead>
-
-            <tbody>
-    """
-
-    for _, row in summary_df.iterrows():
-        html_table += f"""
-            <tr>
-                <td>{row['Date']}</td>
-                <td>{row['Total']}</td>
-                <td>{row['UPI_Total']}</td>
-                <td>{row['UPI_Unique']}</td>
-                <td>{row['UPI_%']}</td>
-                <td>{row['UPI_New']}</td>
-                <td>{row['UPI_New_%']}</td>
-                <td>{row['Bank_Total']}</td>
-                <td>{row['Bank_Unique']}</td>
-                <td>{row['Bank_%']}</td>
-                <td>{row['Bank_New']}</td>
-                <td>{row['Bank_New_%']}</td>
-                <td>{row['unique_website']}</td>
-            </tr>
-        """
-
-    html_table += "</tbody></table></div>"
-
-    # Render the HTML
-    components.html(
-        html_table,
-        height=450,
-        scrolling=True
-    )
-
-    # --- Create formatted Excel output ---
-    output = BytesIO()
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Summary"
-
-    # Header rows
-    ws.append(["Date", "Total", "UPI", "", "", "", "", "Bank", "", "", "", "", "Unique Webiste"])
-    ws.merge_cells("C1:G1")
-    ws.merge_cells("H1:L1")
-    ws["C1"].alignment = ws["H1"].alignment = Alignment(horizontal="center", vertical="center")
-    ws["C1"].font = ws["H1"].font = Font(bold=True)
-
-    ws.append(["Date", "Total", "Total", "Unique", "%", "New", "%", "Total bank", "Unique", "%", "New", "%", "Unique Webiste"])
-
-    for r in dataframe_to_rows(summary_df, index=False, header=False):
-        ws.append(r)
-
-    for cell in ws[1] + ws[2]:
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.font = Font(bold=True)
-
-    for i, col_cells in enumerate(ws.columns, 1):
-        length = max(len(str(c.value)) if c.value else 0 for c in col_cells)
-        ws.column_dimensions[get_column_letter(i)].width = length + 2
-
-    wb.save(output)
-    output.seek(0)
-
-    st.download_button(
-        label="Download Summary Excel",
-        data=output,
-        file_name="upi_summary_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-else:
-    st.info("📤 Please upload a file to generate the report.")
+# ============================================================================
+# COLUMN 2: CHECK FUNCTIONALITY (NEW)
+# ============================================================================
+with col2:
+    st.header("🔍 Check IDs")
+    st.markdown("**Search for IDs in database**")
+    
+    check_target = st.selectbox("Select target to check", list(TABLE_OPTIONS.keys()), key="check_target")
+    check_cfg = TABLE_OPTIONS[check_target]
+    CHECK_TABLE = check_cfg["table_name"]
+    SEARCH_COLUMN = check_cfg["conflict_col"]
+    
+    st.markdown(f"**Searching in:** `{CHECK_TABLE}`")
+    
+    check_method = st.radio("Check method", ["Single/Multiple IDs", "Batch Upload"], horizontal=True)
+    
+    if check_method == "Single/Multiple IDs":
+        st.markdown("**Enter IDs (one per line or comma-separated)**")
+        id_input = st.text_area("Enter IDs to search", 
+                                placeholder="user1@upi\nuser2@upi\nuser3@upi\n\nOr: user1@upi, user2@upi, user3@upi",
+                                height=100)
+        
+        if id_input:
+            # Parse IDs - handle both newline and comma separated
+            if ',' in id_input:
+                ids_list = [id.strip() for id in id_input.split(',') if id.strip()]
+            else:
+                ids_list = [id.strip() for id in id_input.split('\n') if id.strip()]
+            
+            st.info(f"📊 Found {len(ids_list)} ID(s) to check")
+            
+            if st.button("🔎 Search All", use_container_width=True):
+                with st.spinner("Searching..."):
+                    results_df = check_ids_batch(ids_list, CHECK_TABLE, SEARCH_COLUMN)
+                    
+                    # Show summary
+                    col_exists, col_not_exists = st.columns(2)
+                    with col_exists:
+                        exists_count = (results_df["Exists"] == "✅ Yes").sum()
+                        st.metric("Found", exists_count, f"{(exists_count/len(results_df)*100):.1f}%")
+                    with col_not_exists:
+                        not_exists_count = (results_df["Exists"] == "❌ No").sum()
+                        st.metric("Not Found", not_exists_count, f"{(not_exists_count/len(results_df)*100):.1f}%")
+                    
+                    # Show results table
+                    st.dataframe(results_df, use_container_width=True)
+                    
+                    # Show details for found IDs
+                    found_ids = results_df[results_df["Exists"] == "✅ Yes"]["ID"].tolist()
+                    if found_ids:
+                        st.subheader("📋 Details of Found IDs")
+                        for id_val in found_ids:
+                            result = check_id_in_db(id_val, CHECK_TABLE, SEARCH_COLUMN)
+                            with st.expander(f"🔍 {id_val}"):
+                                st.json(result["record"])
+                    
+                    # Download option
+                    csv = results_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Results",
+                        data=csv,
+                        file_name=f"check_results_{check_target.lower()}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+    
+    else:
+        batch_file = st.file_uploader("Upload CSV with IDs to check", type=["csv", "txt"], key="check_file")
+        
+        if batch_file:
+            try:
+                batch_df = pd.read_csv(batch_file, dtype=str)
+            except Exception as e:
+                st.error(f"Could not read CSV: {e}")
+                st.stop()
+            
+            found_cols_map, _ = find_required_columns(batch_df.columns.tolist(), [SEARCH_COLUMN])
+            
+            if SEARCH_COLUMN not in found_cols_map:
+                id_column = batch_df.columns[0]
+                st.warning(f"Using column '{id_column}' as ID column")
+            else:
+                id_column = found_cols_map[SEARCH_COLUMN]
+            
+            batch_ids = batch_df[id_column].astype(str).str.strip().tolist()
+            
+            st.info(f"📊 Found {len(batch_ids)} IDs to check")
+            
+            if st.button("🔎 Check All", use_container_width=True):
+                with st.spinner("Checking all IDs..."):
+                    results_df = check_ids_batch(batch_ids, CHECK_TABLE, SEARCH_COLUMN)
+                    
+                    col_exists, col_not_exists = st.columns(2)
+                    with col_exists:
+                        exists_count = (results_df["Exists"] == "✅ Yes").sum()
+                        st.metric("Found", exists_count, f"{(exists_count/len(results_df)*100):.1f}%")
+                    with col_not_exists:
+                        not_exists_count = (results_df["Exists"] == "❌ No").sum()
+                        st.metric("Not Found", not_exists_count, f"{(not_exists_count/len(results_df)*100):.1f}%")
+                    
+                    st.dataframe(results_df, use_container_width=True)
+                    
+                    csv = results_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Results",
+                        data=csv,
+                        file_name=f"check_results_{check_target.lower()}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )

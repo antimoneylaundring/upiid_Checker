@@ -2,13 +2,19 @@ import streamlit as st
 import pandas as pd
 from datetime import timedelta
 from io import BytesIO
-from supabase import create_client, Client
+from sqlalchemy import create_engine, text
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils import get_column_letter
 import streamlit.components.v1 as components
+import os
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# ================= FULL CSS (UNCHANGED) =================
 st.markdown("""
 <style>
 /* REMOVE default Streamlit page centering */
@@ -47,7 +53,7 @@ html, body {
 </style>
 """, unsafe_allow_html=True)
 
-# ================= CSS =================
+# ================= CSS (last block) =================
 st.markdown("""
 <style>
 .block-container { padding-top: 1rem !important; max-width: 100% !important; }
@@ -56,10 +62,87 @@ iframe { width: 100% !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ================= SUPABASE =================
-SUPABASE_URL = "https://zekvwyaaefjtjqjolsrm.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpla3Z3eWFhZWZqdGpxam9sc3JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNDA4NTksImV4cCI6MjA3NzgxNjg1OX0.wXT_VnXuEZ2wtHSJMR9VJAIv_mtXGQdu0jy0m9V2Gno"
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ================= NHOST DATABASE CONNECTION =================
+@st.cache_resource
+def get_db_engine():
+    """Create and cache database engine"""
+    try:
+        db_url = os.getenv("DB_URL")
+        if not db_url:
+            st.error("DB_URL not found in environment variables")
+            return None
+        engine = create_engine(db_url)
+        return engine
+    except Exception as e:
+        st.error(f"Database connection failed: {e}")
+        return None
+
+def chunk_list(lst, n):
+    """Split list into chunks of size n"""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+def count_new_upis_for_date(engine, upi_array, cutoff_date):
+    """Count new UPIs using the PostgreSQL function"""
+    if not upi_array:
+        return 0
+    
+    total_new = 0
+    
+    try:
+        with engine.connect() as conn:
+            for chunk in chunk_list(upi_array, 3000):
+                query = text("""
+                    SELECT missing_count
+                    FROM count_new_upi(
+                        :p_upi_array,
+                        :p_cutoff_date
+                    )
+                """)
+                
+                result = conn.execute(query, {
+                    "p_upi_array": chunk,
+                    "p_cutoff_date": cutoff_date
+                }).fetchone()
+                
+                if result is not None:
+                    total_new += result[0]
+        
+        return total_new
+    except Exception as e:
+        st.error(f"Error counting new UPIs: {e}")
+        return 0
+
+def count_new_banks_for_date(engine, bank_array, cutoff_date):
+    """Count new Bank Accounts using the PostgreSQL function"""
+    if not bank_array:
+        return 0
+    
+    total_new = 0
+    
+    try:
+        with engine.connect() as conn:
+            for chunk in chunk_list(bank_array, 3000):
+                query = text("""
+                    SELECT missing_count
+                    FROM count_new_bank(
+                        :p_bank_array,
+                        :p_cutoff_date
+                    )
+                """)
+                
+                result = conn.execute(query, {
+                    "p_bank_array": chunk,
+                    "p_cutoff_date": cutoff_date
+                }).fetchone()
+                
+                if result is not None:
+                    total_new += result[0]
+        
+        return total_new
+    except Exception as e:
+        st.error(f"Error counting new banks: {e}")
+        return 0
 
 # ================= UI =================
 st.title("UPI, Bank & Website Summary")
@@ -67,7 +150,12 @@ st.title("UPI, Bank & Website Summary")
 uploaded_file = st.file_uploader("Upload Excel or CSV File", type=["xlsx", "xls", "csv"])
 
 if uploaded_file:
-
+    # Get database engine
+    engine = get_db_engine()
+    if not engine:
+        st.error("Cannot proceed without database connection")
+        st.stop()
+    
     # ---------- LOAD FILE ----------
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(uploaded_file, dtype=str)
@@ -108,11 +196,11 @@ if uploaded_file:
         if pd.isna(x):
             return None
         return str(x).strip().lower().replace(" ", "")
-    
+
     def clean_bank_val(x):
         if pd.isna(x):
             return None
-        return str(x)
+        return str(x).strip()
 
     filtered_df["Upi_vpa_clean"] = filtered_df["Upi_vpa"].apply(clean_val)
     filtered_df["Bank_acc_clean"] = filtered_df["Bank_account_number"].apply(clean_bank_val)
@@ -126,42 +214,12 @@ if uploaded_file:
         (filtered_df["Feature_type"].astype(str).str.strip() == "BS Money Laundering")
     ].copy()
 
-
-    # ---------- BANK ACCOUNT ONLY DF (NEW) ----------
     bank_df = filtered_df[
         (filtered_df["Upi_bank_account_wallet"].astype(str).str.strip() == "Bank Account") &
         (filtered_df["Input_user"].astype(str).str.strip().str.lower() != "automated") &
         (filtered_df["Approvd_status"].astype(str).str.strip() == "1") &
         (filtered_df["Feature_type"].astype(str).str.strip() == "BS Money Laundering")
     ].copy()
-
-    # ---------- FETCH EXISTING UPIs ----------
-    all_upis = upi_df["Upi_vpa_clean"].dropna().unique().tolist()
-    existing_upis = set()
-
-    for i in range(0, len(all_upis), 1000):
-        batch = all_upis[i:i+1000]
-        data = supabase.table("all_upiiD").select("Upi_vpa").in_("Upi_vpa", batch).execute()
-        if data.data:
-            existing_upis.update(d["Upi_vpa"].strip().lower() for d in data.data)
-
-    not_found_upis = set(all_upis) - existing_upis
-
-    # ---------- FETCH EXISTING BANKS ----------
-    all_banks = bank_df["Bank_acc_clean"].dropna().astype(str).unique().tolist()
-    print(all_banks)
-    existing_banks = set()
-
-    for i in range(0, len(all_banks), 1000):
-        batch = all_banks[i:i+1000]
-        data = supabase.table("all_bank_acc").select("Bank_account_number").in_("Bank_account_number", batch).execute()
-        if data.data:
-            # existing_banks.update(d["Bank_account_number"].strip().lower() for d in data.data)
-            existing_banks.update(
-                str(d["Bank_account_number"]) for d in data.data
-            )
-
-    not_found_banks = set(all_banks) - existing_banks
 
     # ---------- GROUPING ----------
     grouped = filtered_df.groupby("Inserted_date").agg(
@@ -179,42 +237,72 @@ if uploaded_file:
     grouped = grouped.merge(bank_grouped, on="Inserted_date", how="left")
     grouped[["Bank_Total", "Bank_Unique"]] = grouped[["Bank_Total", "Bank_Unique"]].fillna(0).astype(int)
 
-    # ---------- SUMMARY ----------
+    # ---------- SUMMARY (DATE-WISE DB CHECK USING POSTGRESQL FUNCTION) ----------
     summary_data = []
 
-    for _, row in grouped.iterrows():
-        date = row["Inserted_date"]
+    with st.spinner("Processing data and checking database..."):
+        for _, row in grouped.iterrows():
+            date = row["Inserted_date"]
+            current_date = pd.to_datetime(date).date()
+            cutoff_date = (current_date - timedelta(days=1)).strftime("%Y-%m-%d")
 
-        date_upis = set(filtered_df.loc[filtered_df["Inserted_date"] == date, "Upi_vpa_clean"])
-        new_upi_today = len(date_upis & not_found_upis)
+            # --- UPI: collect unique UPIs appearing on this date ---
+            date_upis = (
+                upi_df.loc[upi_df["Inserted_date"] == date, "Upi_vpa_clean"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .unique()
+                .tolist()
+            )
 
-        date_banks = set(bank_df.loc[bank_df["Inserted_date"] == date, "Bank_acc_clean"])
-        new_bank_today = len(date_banks & not_found_banks)
+            # Count new UPIs using PostgreSQL function
+            new_upi_today = count_new_upis_for_date(engine, date_upis, cutoff_date)
+            print(f"Date: {date}, Unique UPIs: {len(date_upis)}, New UPIs: {new_upi_today}")
 
-        summary_data.append({
-            "Date": date,
-            "Total": row["website_total"],
+            # --- BANK: collect unique bank accounts appearing on this date ---
+            date_banks = (
+                bank_df.loc[bank_df["Inserted_date"] == date, "Bank_acc_clean"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .unique()
+                .tolist()
+            )
 
-            "UPI_Total": row["Total_UPI"],
-            "UPI_Unique": row["Unique_UPI"],
-            "UPI_%": f"{(row['Unique_UPI']/row['Total_UPI']*100):.0f}%" if row["Total_UPI"] else "0%",
-            "UPI_New": new_upi_today,
-            "UPI_New_%": f"{(new_upi_today/row['Unique_UPI']*100):.0f}%" if row["Unique_UPI"] else "0%",
+            # Count new Bank Accounts using PostgreSQL function
+            new_bank_today = count_new_banks_for_date(engine, date_banks, cutoff_date)
 
-            "Bank_Total": row["Bank_Total"],
-            "Bank_Unique": row["Bank_Unique"],
-            "Bank_%": f"{(row['Bank_Unique']/row['Bank_Total']*100):.0f}%" if row["Bank_Total"] else "0%",
-            "Bank_New": new_bank_today,
-            "Bank_New_%": f"{(new_bank_today/row['Bank_Unique']*100):.0f}%" if row["Bank_Unique"] else "0%",
+            # --- build summary row ---
+            total_upi = int(row["Total_UPI"]) if not pd.isna(row["Total_UPI"]) else 0
+            unique_upi = int(row["Unique_UPI"]) if not pd.isna(row["Unique_UPI"]) else 0
+            bank_total = int(row["Bank_Total"]) if not pd.isna(row["Bank_Total"]) else 0
+            bank_unique = int(row["Bank_Unique"]) if not pd.isna(row["Bank_Unique"]) else 0
 
-            "unique_website": row["unique_website"]
-        })
+            summary_data.append({
+                "Date": date,
+                "Total": int(row["website_total"]),
+
+                "UPI_Total": total_upi,
+                "UPI_Unique": unique_upi,
+                "UPI_%": f"{(unique_upi / total_upi * 100):.0f}%" if total_upi else "0%",
+                "UPI_New": new_upi_today,
+                "UPI_New_%": f"{(new_upi_today / unique_upi * 100):.0f}%" if unique_upi else "0%",
+
+                "Bank_Total": bank_total,
+                "Bank_Unique": bank_unique,
+                "Bank_%": f"{(bank_unique / bank_total * 100):.0f}%" if bank_total else "0%",
+                "Bank_New": new_bank_today,
+                "Bank_New_%": f"{(new_bank_today / bank_unique * 100):.0f}%" if bank_unique else "0%",
+
+                "unique_website": int(row["unique_website"]) if not pd.isna(row["unique_website"]) else 0
+            })
 
     summary_df = pd.DataFrame(summary_data)
 
     # ---------- DISPLAY ----------
     st.subheader("📊 Summary Report")
-    # st.dataframe(summary_df, use_container_width=True)
 
     # Create styled HTML table
     html_table = """
@@ -229,53 +317,52 @@ if uploaded_file:
         .excel-table {
             border-collapse: collapse;
             font-family: 'Segoe UI', sans-serif;
-            font-size: 13px;  /* Reduced from 15px */
+            font-size: 13px;
             width: 100% !important;
             table-layout: fixed !important;
-            min-width: unset;  /* Remove min-width constraint */
+            min-width: unset;
         }
 
         .excel-table th, .excel-table td {
             border: 1px solid #ccc;
             text-align: center;
-            padding: 6px 4px !important;  /* Reduced padding */
+            padding: 6px 4px !important;
             white-space: normal !important;
             word-wrap: break-word !important;
             overflow: hidden;
         }
 
-        /* Specific column widths for better control */
-        .excel-table th:nth-child(1), .excel-table td:nth-child(1) { width: 8%; }   /* Date */
-        .excel-table th:nth-child(2), .excel-table td:nth-child(2) { width: 5%; }   /* Total */
-        .excel-table th:nth-child(3), .excel-table td:nth-child(3) { width: 5%; }   /* UPI Total */
-        .excel-table th:nth-child(4), .excel-table td:nth-child(4) { width: 6%; }   /* UPI Unique */
-        .excel-table th:nth-child(5), .excel-table td:nth-child(5) { width: 4%; }   /* UPI % */
-        .excel-table th:nth-child(6), .excel-table td:nth-child(6) { width: 5%; }   /* UPI New */
-        .excel-table th:nth-child(7), .excel-table td:nth-child(7) { width: 4%; }   /* UPI New % */
-        .excel-table th:nth-child(8), .excel-table td:nth-child(8) { width: 7%; }   /* Bank Total */
-        .excel-table th:nth-child(9), .excel-table td:nth-child(9) { width: 6%; }   /* Bank Unique */
-        .excel-table th:nth-child(10), .excel-table td:nth-child(10) { width: 4%; } /* Bank % */
-        .excel-table th:nth-child(11), .excel-table td:nth-child(11) { width: 5%; } /* Bank New */
-        .excel-table th:nth-child(12), .excel-table td:nth-child(12) { width: 4%; } /* Bank New % */
-        .excel-table th:nth-child(13), .excel-table td:nth-child(13) { width: 8%; } /* Unique Website */
+        .excel-table th:nth-child(1), .excel-table td:nth-child(1) { width: 8%; }
+        .excel-table th:nth-child(2), .excel-table td:nth-child(2) { width: 5%; }
+        .excel-table th:nth-child(3), .excel-table td:nth-child(3) { width: 5%; }
+        .excel-table th:nth-child(4), .excel-table td:nth-child(4) { width: 6%; }
+        .excel-table th:nth-child(5), .excel-table td:nth-child(5) { width: 4%; }
+        .excel-table th:nth-child(6), .excel-table td:nth-child(6) { width: 5%; }
+        .excel-table th:nth-child(7), .excel-table td:nth-child(7) { width: 4%; }
+        .excel-table th:nth-child(8), .excel-table td:nth-child(8) { width: 7%; }
+        .excel-table th:nth-child(9), .excel-table td:nth-child(9) { width: 6%; }
+        .excel-table th:nth-child(10), .excel-table td:nth-child(10) { width: 4%; }
+        .excel-table th:nth-child(11), .excel-table td:nth-child(11) { width: 5%; }
+        .excel-table th:nth-child(12), .excel-table td:nth-child(12) { width: 4%; }
+        .excel-table th:nth-child(13), .excel-table td:nth-child(13) { width: 8%; }
 
         .excel-table thead tr:first-child th {
             background-color: #cbd5e1;
-            font-size: 16px;  /* Reduced from 18px */
+            font-size: 16px;
             font-weight: 700;
             padding: 8px;
         }
 
         .excel-table thead tr:nth-child(2) th {
             background-color: #cbd5e1;
-            font-size: 14px;  /* Reduced from 16px */
+            font-size: 14px;
             font-weight: 600;
         }
 
         .excel-table thead tr:nth-child(3) th {
             background-color: #e2e8f0;
             font-weight: 500;
-            font-size: 12px;  /* Added smaller font for headers */
+            font-size: 12px;
         }
 
         .excel-table td {

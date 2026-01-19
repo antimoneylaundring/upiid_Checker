@@ -180,17 +180,31 @@ with col1:
     if uploaded_file:
         try:
             df = pd.read_csv(uploaded_file, dtype=str)
+            # print(f"Uploaded columns: {df.columns.tolist()}")
+            
         except Exception as e:
             st.error(f"Could not read CSV: {e}")
             st.stop()
         
-        found_cols_map, missing = find_required_columns(df.columns.tolist(), REQUIRED_COLS)
+        
+        mask = (
+            (df["Feature_type"].astype(str).str.strip() == "BS Money Laundering") &
+            (df["Upi_bank_account_wallet"].astype(str).str.strip().isin(["UPI"])) &
+            (df["Search_for"].astype(str).str.strip().isin(["App", "Web"]))
+            # (~df["Input_user"].astype(str).str.contains("icuser", case=False, na=False))
+        )
+
+        filtered_df = df[mask].copy()
+        
+        found_cols_map, missing = find_required_columns(filtered_df.columns.tolist(), REQUIRED_COLS)
+        print(f"Found columns map: {found_cols_map}")
         if missing:
             st.error(f"CSV must contain columns: {', '.join(missing)}")
             st.stop()
         
         actual_cols = [found_cols_map[c] for c in REQUIRED_COLS]
-        df_clean = df[actual_cols].copy()
+        df_clean = filtered_df[actual_cols].copy()
+        # print(f"Found columns mapping: {df_clean}")
         rename_map = {found_cols_map[c]: c for c in REQUIRED_COLS}
         df_clean = df_clean.rename(columns=rename_map)
         
@@ -201,6 +215,10 @@ with col1:
         
         df_clean = df_clean.dropna(subset=[key_col])
         df_clean[key_col] = df_clean[key_col].astype(str).str.strip()
+        if key_col.lower() == "upi_vpa".lower():
+            df_clean[key_col] = df_clean[key_col].str.lower()
+        # remove empty strings after strip
+        df_clean = df_clean[df_clean[key_col] != ""]
         df_clean = df_clean.drop_duplicates(subset=[key_col])
         
         # --------------------------
@@ -261,7 +279,6 @@ with col1:
                     st.json(result["errors"])
                 else:
                     st.info("✅ No errors reported")
-
 
 # ============================================================================
 # COLUMN 2: CHECK FUNCTIONALITY (NEW)
