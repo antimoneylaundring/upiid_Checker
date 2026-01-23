@@ -273,6 +273,7 @@ if uploaded_file:
 
             # Count new Bank Accounts using PostgreSQL function
             new_bank_today = count_new_banks_for_date(engine, date_banks, cutoff_date)
+            print(f"Date: {date}, Unique Banks: {len(date_banks)}, New Banks: {new_bank_today}")  
 
             # --- build summary row ---
             total_upi = int(row["Total_UPI"]) if not pd.isna(row["Total_UPI"]) else 0
