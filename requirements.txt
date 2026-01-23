@@ -1,7 +1,7 @@
 supabase
 pandas
-streamlit
+streamlit==1.37.0
 python-dateutil
 openpyxl>=3.1.2
 altair==4.2.2
-protobuf>=5.27.3
+protobuf==3.20.3
