@@ -24,6 +24,21 @@ if DB_URL and 'postgresql+psycopg2://' in DB_URL:
 
 st.set_page_config(page_title="UPI/Bank Import & Check", layout="wide")
 
+st.markdown("""
+    <style>
+            /* Headers styling */
+            h1 {
+                font-weight: 700;
+                padding: 0;
+                font-size: 2rem;
+            }
+            /* Main container styling */
+            .block-container {
+                padding: 3rem 2rem;
+            }
+    </style>
+""", unsafe_allow_html=True)
+
 # Table options and their required columns + conflict column + filter value
 TABLE_OPTIONS = {
     "UPI": {
@@ -261,6 +276,37 @@ def check_ids_batch(ids_list: list, table_name: str, search_column: str) -> pd.D
     
     return pd.DataFrame(results)
 
+
+st.title("Total Database Summary")
+st.markdown("<p style='font-size: 1rem; margin-bottom:5px;'>UPI & Bank Account</p>", unsafe_allow_html=True)
+
+try:
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # Total UPI IDs
+    cur.execute('SELECT COUNT(*) FROM "all_upiiD"')
+    upi_count = cur.fetchone()[0]
+
+    # Total Bank Accounts
+    cur.execute('SELECT COUNT(*) FROM "all_bank_acc"')
+    bank_count = cur.fetchone()[0]
+
+    cur.close()
+    conn.close()
+
+    # ===== DISPLAY =====
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric("Total UPI IDs", f"{upi_count:,}")
+
+    with col2:
+        st.metric("Total Bank Accounts", f"{bank_count:,}")
+
+except Exception as e:
+    st.error("Failed to fetch data from Nhost DB")
+    st.exception(e)
 
 # ============================================================================
 # MAIN UI: TWO-COLUMN LAYOUT
