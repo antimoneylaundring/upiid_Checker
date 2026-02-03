@@ -512,15 +512,6 @@ with col2:
                     # Show results table
                     st.dataframe(results_df, use_container_width=True, height=300)
                     
-                    # Show details for found IDs
-                    found_ids = results_df[results_df["Exists"] == "✅ Yes"]["ID"].tolist()
-                    if found_ids:
-                        st.subheader("📋 Details of Found IDs")
-                        for id_val in found_ids:
-                            result = check_id_in_db(id_val, CHECK_TABLE, SEARCH_COLUMN)
-                            with st.expander(f"🔍 {id_val}"):
-                                st.json(result["record"])
-                    
                     # Download option
                     csv = results_df.to_csv(index=False)
                     st.download_button(
