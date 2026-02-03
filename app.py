@@ -278,19 +278,22 @@ def check_ids_batch(ids_list: list, table_name: str, search_column: str) -> pd.D
 
 
 st.title("Total Database Summary")
-st.markdown("<p style='font-size: 1rem; margin-bottom:5px;'>UPI & Bank Account</p>", unsafe_allow_html=True)
 
 try:
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # Total UPI IDs
-    cur.execute('SELECT COUNT(*) FROM "all_upiiD"')
-    upi_count = cur.fetchone()[0]
+    # Total UPI IDs and latest date
+    cur.execute('SELECT COUNT(*), MAX("Inserted_date") FROM "all_upiiD"')
+    upi_result = cur.fetchone()
+    upi_count = upi_result[0]
+    upi_latest_date = upi_result[1]
 
-    # Total Bank Accounts
-    cur.execute('SELECT COUNT(*) FROM "all_bank_acc"')
-    bank_count = cur.fetchone()[0]
+    # Total Bank Accounts and latest date
+    cur.execute('SELECT COUNT(*), MAX("Inserted_date") FROM "all_bank_acc"')
+    bank_result = cur.fetchone()
+    bank_count = bank_result[0]
+    bank_latest_date = bank_result[1]
 
     cur.close()
     conn.close()
@@ -299,10 +302,12 @@ try:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.metric("Total UPI IDs", f"{upi_count:,}")
+        latest_date_str = f" (Latest: {upi_latest_date.strftime('%Y-%m-%d')})" if upi_latest_date else ""
+        st.metric("Total UPI IDs", f"{upi_count:,}{latest_date_str}")
 
     with col2:
-        st.metric("Total Bank Accounts", f"{bank_count:,}")
+        latest_date_str = f" (Latest: {bank_latest_date.strftime('%Y-%m-%d')})" if bank_latest_date else ""
+        st.metric("Total Bank Accounts", f"{bank_count:,}{latest_date_str}")
 
 except Exception as e:
     st.error("Failed to fetch data from Nhost DB")
