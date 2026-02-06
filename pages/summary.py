@@ -240,6 +240,23 @@ if uploaded_file:
     # ---------- SUMMARY (DATE-WISE DB CHECK USING POSTGRESQL FUNCTION) ----------
     summary_data = []
 
+    target_users = [
+        "Emp Sunena Yadav",
+        "Emp Shubhankar Shukla",
+        "Emp Sheetal Dubey"
+    ]
+    user_rows = []
+
+    # get unique dates first
+    all_dates = (
+        df["Inserted_date"]
+        .pipe(pd.to_datetime, errors="coerce")
+        .dt.date
+        .dropna()
+        .unique()
+    )
+    freelancer_summary = []
+
     with st.spinner("Processing data and checking database..."):
         for _, row in grouped.iterrows():
             date = row["Inserted_date"]
@@ -300,128 +317,423 @@ if uploaded_file:
                 "unique_website": int(row["unique_website"]) if not pd.isna(row["unique_website"]) else 0
             })
 
+        # ---------- USER-WISE UPI SUMMARY FOR THIS DATE ----------
+        
+        for user in target_users:
+            user_mask = (
+                (upi_df["Inserted_date"] == date) &
+                (upi_df["Input_user"].astype(str).str.strip() == user) &
+                (upi_df["Approvd_status"].astype(str).str.strip() == "1") &
+                (upi_df["Upi_bank_account_wallet"].astype(str).str.strip().str.upper() == "UPI")
+            )
+
+            user_df = upi_df.loc[user_mask].copy()
+
+            total = int(len(user_df))
+            unique_count = int(user_df["Upi_vpa_clean"].dropna().astype(str).str.strip().nunique())
+
+            # get unique upis for DB check (as list)
+            user_upis_list = user_df["Upi_vpa_clean"].dropna().astype(str).str.strip().unique().tolist()
+
+            # call DB function to get new upis for this user's list (uses your chunking function)
+            new_count = count_new_upis_for_date(engine, user_upis_list, cutoff_date) if user_upis_list else 0
+
+            unique_pct = f"{(unique_count / total * 100):.0f}%" if total else "0%"
+            new_pct = f"{(new_count / unique_count * 100):.0f}%" if unique_count else "0%"
+
+            user_rows.append({
+                "Date": date,
+                "Input_user": user,
+                "Total": total,
+                "Unique_UPI_Count": unique_count,
+                "Unique_UPI_%": unique_pct,
+                "New_UPI_Count": new_count,
+                "New_UPI_%": new_pct
+            })
+
+        # ---------- FREELANCER SUMMARY FOR THIS DATE ----------
+    
+        for date in sorted(all_dates):
+
+            cutoff_date = (
+                pd.to_datetime(date) - timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+
+            # ================= FREELANCER =================
+            freelancer_mask = (
+                (df["Inserted_date"].pipe(pd.to_datetime, errors="coerce").dt.date == date) &
+                (df["Input_user"].astype(str).str.contains("Freelancer", case=False, na=False)) &
+                (df["Approvd_status"].astype(str).str.strip() == "1")
+            )
+
+            freelancer_df = df.loc[freelancer_mask].copy()
+
+            # ================= INT (NOT icuser) =================
+            int_mask = (
+                (df["Inserted_date"].pipe(pd.to_datetime, errors="coerce").dt.date == date) &
+                (df["Input_user"].astype(str).str.contains("INT", case=False, na=False)) &
+                (~df["Input_user"].astype(str).str.contains("icuser", case=False, na=False)) &
+                (df["Approvd_status"].astype(str).str.strip() == "1")
+            )
+
+            int_df = df.loc[int_mask].copy()
+
+            # helper function to avoid duplication
+            def process_df(date_df):
+                if date_df.empty:
+                    return 0, 0, 0, 0, 0, 0
+
+                # CLEAN
+                date_df["Upi_vpa_clean"] = (
+                    date_df["Upi_vpa"]
+                    .astype(str).str.strip().str.lower().str.replace(" ", "")
+                )
+
+                date_df["Bank_acc_clean"] = (
+                    date_df["Bank_account_number"].apply(clean_bank_val)
+                )
+
+                # ---------- UPI ----------
+                upi_df = date_df[
+                    date_df["Upi_bank_account_wallet"]
+                    .astype(str).str.strip().str.upper() == "UPI"
+                ]
+
+                total_upi = len(upi_df)
+                unique_upi_list = upi_df["Upi_vpa_clean"].dropna().unique().tolist()
+                unique_upi = len(unique_upi_list)
+
+                new_upi = (
+                    count_new_upis_for_date(engine, unique_upi_list, cutoff_date)
+                    if unique_upi_list else 0
+                )
+
+                # ---------- BANK ----------
+                bank_df = date_df[
+                    date_df["Upi_bank_account_wallet"]
+                    .astype(str).str.strip() == "Bank Account"
+                ]
+
+                total_bank = len(bank_df)
+                unique_bank_list = bank_df["Bank_acc_clean"].dropna().unique().tolist()
+                unique_bank = len(unique_bank_list)
+
+                new_bank = (
+                    count_new_banks_for_date(engine, unique_bank_list, cutoff_date)
+                    if unique_bank_list else 0
+                )
+
+                return total_upi, unique_upi, new_upi, total_bank, unique_bank, new_bank
+
+            # ---------- PROCESS BOTH ----------
+            f_total_upi, f_unique_upi, f_new_upi, f_total_bank, f_unique_bank, f_new_bank = (
+                process_df(freelancer_df)
+            )
+
+            i_total_upi, i_unique_upi, i_new_upi, i_total_bank, i_unique_bank, i_new_bank = (
+                process_df(int_df)
+            )
+
+            # ---------- APPEND ----------
+            freelancer_summary.append({
+                "User_Type": "Freelancer",
+                "Date": date,
+                "Total_UPI": f_total_upi,
+                "Unique_UPI": f_unique_upi,
+                "New_UPI": f_new_upi,
+                "Total_Bank": f_total_bank,
+                "Unique_Bank": f_unique_bank,
+                "New_Bank": f_new_bank
+            })
+
+            freelancer_summary.append({
+                "User_Type": "INT",
+                "Date": date,
+                "Total_UPI": i_total_upi,
+                "Unique_UPI": i_unique_upi,
+                "New_UPI": i_new_upi,
+                "Total_Bank": i_total_bank,
+                "Unique_Bank": i_unique_bank,
+                "New_Bank": i_new_bank
+            })
+
+
     summary_df = pd.DataFrame(summary_data)
+    multiple_summary_df = pd.DataFrame(user_rows)
+    freelancer_summary_df = pd.DataFrame(freelancer_summary)
 
     # ---------- DISPLAY ----------
     st.subheader("📊 Summary Report")
 
-    # Create styled HTML table
-    html_table = """
-        <style>
-        .table-container {
-            width: 100%;
-            overflow-x: auto;
-            margin: 0;
-            padding: 0;
-        }
+    summary_type = st.selectbox(
+        "Select Summary Type",
+        [
+            "UPI & Bank Summary",
+            "Multiple User's Summary",
+            "Intern & Freelancer Summary"
+        ]
+    )
 
-        .excel-table {
-            border-collapse: collapse;
-            font-family: 'Segoe UI', sans-serif;
-            font-size: 13px;
-            width: 100% !important;
-            table-layout: fixed !important;
-            min-width: unset;
-        }
+    if summary_type == "UPI & Bank Summary":         
+        # Create styled HTML table
+        html_table = """
+            <style>
+            .table-container {
+                width: 100%;
+                overflow-x: auto;
+                margin: 0;
+                padding: 0;
+            }
 
-        .excel-table th, .excel-table td {
-            border: 1px solid #ccc;
-            text-align: center;
-            padding: 6px 4px !important;
-            white-space: normal !important;
-            word-wrap: break-word !important;
-            overflow: hidden;
-        }
+            .excel-table {
+                border-collapse: collapse;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 13px;
+                width: 100% !important;
+                table-layout: fixed !important;
+                min-width: unset;
+            }
 
-        .excel-table th:nth-child(1), .excel-table td:nth-child(1) { width: 8%; }
-        .excel-table th:nth-child(2), .excel-table td:nth-child(2) { width: 5%; }
-        .excel-table th:nth-child(3), .excel-table td:nth-child(3) { width: 5%; }
-        .excel-table th:nth-child(4), .excel-table td:nth-child(4) { width: 6%; }
-        .excel-table th:nth-child(5), .excel-table td:nth-child(5) { width: 4%; }
-        .excel-table th:nth-child(6), .excel-table td:nth-child(6) { width: 5%; }
-        .excel-table th:nth-child(7), .excel-table td:nth-child(7) { width: 4%; }
-        .excel-table th:nth-child(8), .excel-table td:nth-child(8) { width: 7%; }
-        .excel-table th:nth-child(9), .excel-table td:nth-child(9) { width: 6%; }
-        .excel-table th:nth-child(10), .excel-table td:nth-child(10) { width: 4%; }
-        .excel-table th:nth-child(11), .excel-table td:nth-child(11) { width: 5%; }
-        .excel-table th:nth-child(12), .excel-table td:nth-child(12) { width: 4%; }
-        .excel-table th:nth-child(13), .excel-table td:nth-child(13) { width: 8%; }
+            .excel-table th, .excel-table td {
+                border: 1px solid #ccc;
+                text-align: center;
+                padding: 6px 4px !important;
+                white-space: normal !important;
+                word-wrap: break-word !important;
+                overflow: hidden;
+            }
 
-        .excel-table thead tr:first-child th {
-            background-color: #cbd5e1;
-            font-size: 16px;
-            font-weight: 700;
-            padding: 8px;
-        }
+            .excel-table th:nth-child(1), .excel-table td:nth-child(1) { width: 8%; }
+            .excel-table th:nth-child(2), .excel-table td:nth-child(2) { width: 5%; }
+            .excel-table th:nth-child(3), .excel-table td:nth-child(3) { width: 5%; }
+            .excel-table th:nth-child(4), .excel-table td:nth-child(4) { width: 6%; }
+            .excel-table th:nth-child(5), .excel-table td:nth-child(5) { width: 4%; }
+            .excel-table th:nth-child(6), .excel-table td:nth-child(6) { width: 5%; }
+            .excel-table th:nth-child(7), .excel-table td:nth-child(7) { width: 4%; }
+            .excel-table th:nth-child(8), .excel-table td:nth-child(8) { width: 7%; }
+            .excel-table th:nth-child(9), .excel-table td:nth-child(9) { width: 6%; }
+            .excel-table th:nth-child(10), .excel-table td:nth-child(10) { width: 4%; }
+            .excel-table th:nth-child(11), .excel-table td:nth-child(11) { width: 5%; }
+            .excel-table th:nth-child(12), .excel-table td:nth-child(12) { width: 4%; }
+            .excel-table th:nth-child(13), .excel-table td:nth-child(13) { width: 8%; }
 
-        .excel-table thead tr:nth-child(2) th {
-            background-color: #cbd5e1;
-            font-size: 14px;
-            font-weight: 600;
-        }
+            .excel-table thead tr:first-child th {
+                background-color: #cbd5e1;
+                font-size: 16px;
+                font-weight: 700;
+                padding: 8px;
+            }
 
-        .excel-table thead tr:nth-child(3) th {
-            background-color: #e2e8f0;
-            font-weight: 500;
-            font-size: 12px;
-        }
+            .excel-table thead tr:nth-child(2) th {
+                background-color: #cbd5e1;
+                font-size: 14px;
+                font-weight: 600;
+            }
 
-        .excel-table td {
-            background-color: #f8fafc;
-        }
-        </style>
+            .excel-table thead tr:nth-child(3) th {
+                background-color: #e2e8f0;
+                font-weight: 500;
+                font-size: 12px;
+            }
 
-        <div class="table-container">
-        <table class="excel-table">
-            <thead>
-                <tr>
-                    <th colspan="13">UPI, Bank & Website Report</th>
-                </tr>
+            .excel-table td {
+                background-color: #f8fafc;
+            }
+            </style>
 
-                <tr>
-                    <th rowspan="2">Date</th>
-                    <th rowspan="2">Total</th>
-                    <th colspan="5">UPI</th>
-                    <th colspan="5">Bank</th>
-                    <th rowspan="2">Unique Website</th>
-                </tr>
+            <div class="table-container">
+            <table class="excel-table">
+                <thead>
+                    <tr>
+                        <th colspan="13">UPI, Bank & Website Report</th>
+                    </tr>
 
-                <tr>
-                    <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
-                    <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
-                </tr>
-            </thead>
+                    <tr>
+                        <th rowspan="2">Date</th>
+                        <th rowspan="2">Total</th>
+                        <th colspan="5">UPI</th>
+                        <th colspan="5">Bank</th>
+                        <th rowspan="2">Unique Website</th>
+                    </tr>
 
-            <tbody>
-    """
+                    <tr>
+                        <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
+                        <th>Total</th><th>Unique</th><th>%</th><th>New</th><th>%</th>
+                    </tr>
+                </thead>
 
-    for _, row in summary_df.iterrows():
-        html_table += f"""
-            <tr>
-                <td>{row['Date']}</td>
-                <td>{row['Total']}</td>
-                <td>{row['UPI_Total']}</td>
-                <td>{row['UPI_Unique']}</td>
-                <td>{row['UPI_%']}</td>
-                <td>{row['UPI_New']}</td>
-                <td>{row['UPI_New_%']}</td>
-                <td>{row['Bank_Total']}</td>
-                <td>{row['Bank_Unique']}</td>
-                <td>{row['Bank_%']}</td>
-                <td>{row['Bank_New']}</td>
-                <td>{row['Bank_New_%']}</td>
-                <td>{row['unique_website']}</td>
-            </tr>
+                <tbody>
         """
 
-    html_table += "</tbody></table></div>"
+        for _, row in summary_df.iterrows():
+            html_table += f"""
+                <tr>
+                    <td>{row['Date']}</td>
+                    <td>{row['Total']}</td>
+                    <td>{row['UPI_Total']}</td>
+                    <td>{row['UPI_Unique']}</td>
+                    <td>{row['UPI_%']}</td>
+                    <td>{row['UPI_New']}</td>
+                    <td>{row['UPI_New_%']}</td>
+                    <td>{row['Bank_Total']}</td>
+                    <td>{row['Bank_Unique']}</td>
+                    <td>{row['Bank_%']}</td>
+                    <td>{row['Bank_New']}</td>
+                    <td>{row['Bank_New_%']}</td>
+                    <td>{row['unique_website']}</td>
+                </tr>
+            """
 
-    # Render the HTML
-    components.html(
-        html_table,
-        height=450,
-        scrolling=True
-    )
+        html_table += "</tbody></table></div>"
+
+        # Render the HTML
+        components.html(
+            html_table,
+            height=450,
+            scrolling=True
+        )
+
+    elif summary_type == "Multiple User's Summary":
+        # prepare HTML table
+        multiple_user_table = f"""
+            <style>
+            .table-user {{
+                width:100%;
+                border-collapse:collapse;
+                font-family:'Segoe UI', sans-serif;
+                font-size:14px;
+            }}
+            .table-user th, .table-user td {{
+                border:1px solid #000;
+                padding:6px 10px;
+                text-align:center;
+            }}
+            .table-user thead th {{
+                background:#cfe8b0;
+                font-weight:700;
+            }}
+            .table-user tfoot td {{
+                font-weight:700;
+                background:#ffffff;
+            }}
+            .table-user td.name {{
+                text-align:left;
+            }}
+            </style>
+
+            <div style="margin-top:12px;">
+            <table class="table-user">
+                <thead>
+                    <tr>
+                        <th colspan="6">Multiple User's Counts ({date})</th>
+                    </tr>
+                    <tr>
+                        <th rowspan="2">Name</th>
+                        <th rowspan="2">Total</th>
+                        <th colspan="2">Unique UPI</th>
+                        <th colspan="2">New UPI</th>
+                    </tr>
+                    <tr>
+                        <th>Count</th><th>%</th>
+                        <th>Count</th><th>%</th>
+                    </tr>
+                </thead>
+            <tbody>
+            """
+        
+        for _, row in multiple_summary_df.iterrows():
+            multiple_user_table += f"""
+                <tr>
+                    <td>{row['Input_user']}</td>
+                    <td>{row['Total']}</td>
+                    <td>{row['Unique_UPI_Count']}</td>
+                    <td>{row['Unique_UPI_%']}</td>
+                    <td>{row['New_UPI_Count']}</td>
+                    <td>{row['New_UPI_%']}</td>
+                </tr>
+            """
+
+        # Render the HTML
+        components.html(
+            multiple_user_table,
+            height=450,
+            scrolling=True
+        )
+        
+    elif summary_type == "Intern & Freelancer Summary":
+        # prepare HTML table
+        freelancer_table = f"""
+            <style>
+            .table-user {{
+                width:100%;
+                border-collapse:collapse;
+                font-family:'Segoe UI', sans-serif;
+                font-size:14px;
+            }}
+            .table-user th, .table-user td {{
+                border:1px solid #000;
+                padding:6px 10px;
+                text-align:center;
+            }}
+            .table-user thead th {{
+                background:#cfe8b0;
+                font-weight:700;
+            }}
+            .table-user tfoot td {{
+                font-weight:700;
+                background:#ffffff;
+            }}
+            .table-user td.name {{
+                text-align:left;
+            }}
+            </style>
+
+            <div style="margin-top:12px;">
+            <table class="table-user">
+                <thead>
+                    <tr><th colspan="8">Intern & Freelancer Summary</th></tr>
+                    <tr>
+                        <th>User Type</th>
+                        <th>Date</th>
+                        <th>Total UPI</th>
+                        <th>Unique UPI</th>
+                        <th>New UPI</th>
+                        <th>Total Bank</th>
+                        <th>Unique Bank</th>
+                        <th>New Bank</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Freelancer</td>
+                        <td>{date}</td>
+                        <td>{f_total_upi}</td>
+                        <td>{f_unique_upi}</td>
+                        <td>{f_new_upi}</td>
+                        <td>{f_total_bank}</td>
+                        <td>{f_unique_bank}</td>
+                        <td>{f_new_bank}</td>
+                    </tr>
+                    <tr>
+                        <td>INT</td>
+                        <td>{date}</td>
+                        <td>{i_total_upi}</td>
+                        <td>{i_unique_upi}</td>
+                        <td>{i_new_upi}</td>
+                        <td>{i_total_bank}</td>
+                        <td>{i_unique_bank}</td>
+                        <td>{i_new_bank}</td>
+                    </tr>
+                </tbody>
+            </table>
+            """
+
+        # Render the HTML
+        components.html(
+            freelancer_table,
+            height=450,
+            scrolling=True
+        )
 
     # ---------- EXCEL EXPORT ----------
     output = BytesIO()
