@@ -618,7 +618,22 @@ if uploaded_file:
         )
 
     elif summary_type == "Multiple User's Summary":
-        # prepare HTML table
+
+        # ---------- TOTAL CALCULATION (ADD HERE – BEFORE HTML) ----------
+        total_total = multiple_summary_df["Total"].sum()
+        total_unique = multiple_summary_df["Unique_UPI_Count"].sum()
+        total_new = multiple_summary_df["New_UPI_Count"].sum()
+
+        total_unique_pct = (
+            f"{(total_unique / total_total * 100):.0f}%"
+            if total_total else "0%"
+        )
+        total_new_pct = (
+            f"{(total_new / total_unique * 100):.0f}%"
+            if total_unique else "0%"
+        )
+
+        # ---------- prepare HTML table ----------
         multiple_user_table = f"""
             <style>
             .table-user {{
@@ -638,7 +653,7 @@ if uploaded_file:
             }}
             .table-user tfoot td {{
                 font-weight:700;
-                background:#ffffff;
+                background:#eef6d8;
             }}
             .table-user td.name {{
                 text-align:left;
@@ -662,13 +677,14 @@ if uploaded_file:
                         <th>Count</th><th>%</th>
                     </tr>
                 </thead>
-            <tbody>
-            """
-        
+                <tbody>
+        """
+
+        # ---------- DATA ROWS ----------
         for _, row in multiple_summary_df.iterrows():
             multiple_user_table += f"""
                 <tr>
-                    <td>{row['Input_user']}</td>
+                    <td class="name">{row['Input_user']}</td>
                     <td>{row['Total']}</td>
                     <td>{row['Unique_UPI_Count']}</td>
                     <td>{row['Unique_UPI_%']}</td>
@@ -677,7 +693,24 @@ if uploaded_file:
                 </tr>
             """
 
-        # Render the HTML
+        # ---------- TOTAL ROW (ADD HERE – AFTER LOOP) ----------
+        multiple_user_table += f"""
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td class="name">Total</td>
+                    <td>{total_total}</td>
+                    <td>{total_unique}</td>
+                    <td>{total_unique_pct}</td>
+                    <td>{total_new}</td>
+                    <td>{total_new_pct}</td>
+                </tr>
+            </tfoot>
+            </table>
+            </div>
+        """
+
+        # ---------- RENDER ----------
         components.html(
             multiple_user_table,
             height=450,
@@ -717,8 +750,12 @@ if uploaded_file:
                 <thead>
                     <tr><th colspan="8">Employee, Intern & Freelancer Summary</th></tr>
                     <tr>
-                        <th>User</th>
-                        <th>Date</th>
+                        <th rowspan="2">User</th>
+                        <th rowspan="2">Date</th>
+                        <th colspan="3">UPI</th>
+                        <th colspan="3">Bank</th>
+                    </tr>
+                    <tr>
                         <th>Total UPI</th>
                         <th>Unique UPI</th>
                         <th>New UPI</th>
@@ -757,6 +794,18 @@ if uploaded_file:
                         <td>{f_new_bank}</td>
                     </tr>
                 </tbody>
+                <tfoot>
+                    <tr>
+                        <td class="left">Total</td>
+                        <td>NA</td>
+                        <td>{e_total_upi + i_total_upi + f_total_upi}</td>
+                        <td>{e_unique_upi + i_unique_upi + f_unique_upi}</td>
+                        <td>{e_new_upi + i_new_upi + f_new_upi}</td>
+                        <td>{e_total_bank + i_total_bank + f_total_bank}</td>
+                        <td>{e_unique_bank + i_unique_bank + f_unique_bank}</td>
+                        <td>{e_new_bank + i_new_bank + f_new_bank}</td>
+                    </tr>
+                </tfoot>
             </table>
             """
 
