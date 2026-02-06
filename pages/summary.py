@@ -378,6 +378,15 @@ if uploaded_file:
 
             int_df = df.loc[int_mask].copy()
 
+            emp_mask = (
+                (df["Inserted_date"].pipe(pd.to_datetime, errors="coerce").dt.date == date) &
+                (df["Input_user"].astype(str).str.contains("Emp", case=False, na=False)) &
+                (~df["Input_user"].astype(str).str.contains("icuser", case=False, na=False)) &
+                (df["Approvd_status"].astype(str).str.strip() == "1")
+            )
+
+            emp_df = df.loc[emp_mask].copy()
+
             # helper function to avoid duplication
             def process_df(date_df):
                 if date_df.empty:
@@ -434,6 +443,10 @@ if uploaded_file:
                 process_df(int_df)
             )
 
+            e_total_upi, e_unique_upi, e_new_upi, e_total_bank, e_unique_bank, e_new_bank = (
+                process_df(emp_df)
+            )
+
             # ---------- APPEND ----------
             freelancer_summary.append({
                 "User_Type": "Freelancer",
@@ -455,6 +468,17 @@ if uploaded_file:
                 "Total_Bank": i_total_bank,
                 "Unique_Bank": i_unique_bank,
                 "New_Bank": i_new_bank
+            })
+
+            freelancer_summary.append({
+                "User_Type": "Employee",
+                "Date": date,
+                "Total_UPI": e_total_upi,
+                "Unique_UPI": e_unique_upi,
+                "New_UPI": e_new_upi,
+                "Total_Bank": e_total_bank,
+                "Unique_Bank": e_unique_bank,
+                "New_Bank": e_new_bank
             })
 
 
@@ -691,9 +715,9 @@ if uploaded_file:
             <div style="margin-top:12px;">
             <table class="table-user">
                 <thead>
-                    <tr><th colspan="8">Intern & Freelancer Summary</th></tr>
+                    <tr><th colspan="8">Employee, Intern & Freelancer Summary</th></tr>
                     <tr>
-                        <th>User Type</th>
+                        <th>User</th>
                         <th>Date</th>
                         <th>Total UPI</th>
                         <th>Unique UPI</th>
@@ -705,24 +729,32 @@ if uploaded_file:
                 </thead>
                 <tbody>
                     <tr>
-                        <td>Freelancer</td>
-                        <td>{date}</td>
-                        <td>{f_total_upi}</td>
-                        <td>{f_unique_upi}</td>
-                        <td>{f_new_upi}</td>
-                        <td>{f_total_bank}</td>
-                        <td>{f_unique_bank}</td>
-                        <td>{f_new_bank}</td>
+                        <td>Employee</td>
+                        <td rowspan="3">{date}</td>
+                        <td>{e_total_upi}</td>
+                        <td>{e_unique_upi}</td>
+                        <td>{e_new_upi}</td>
+                        <td>{e_total_bank}</td>
+                        <td>{e_unique_bank}</td>
+                        <td>{e_new_bank}</td>
                     </tr>
                     <tr>
-                        <td>INT</td>
-                        <td>{date}</td>
+                        <td>Intern</td>
                         <td>{i_total_upi}</td>
                         <td>{i_unique_upi}</td>
                         <td>{i_new_upi}</td>
                         <td>{i_total_bank}</td>
                         <td>{i_unique_bank}</td>
                         <td>{i_new_bank}</td>
+                    </tr>
+                    <tr>
+                        <td>Freelancer</td>
+                        <td>{f_total_upi}</td>
+                        <td>{f_unique_upi}</td>
+                        <td>{f_new_upi}</td>
+                        <td>{f_total_bank}</td>
+                        <td>{f_unique_bank}</td>
+                        <td>{f_new_bank}</td>
                     </tr>
                 </tbody>
             </table>
