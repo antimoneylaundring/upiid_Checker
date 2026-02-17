@@ -62,16 +62,6 @@ iframe { width: 100% !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ================= HELPER FUNCTIONS =================
-def find_column(cols, keys):
-    """Find column by matching keywords"""
-    for c in cols:
-        cc = c.lower().replace(" ", "").replace("_", "")
-        for k in keys:
-            if k in cc:
-                return c
-    return None
-
 # ================= NHOST DATABASE CONNECTION =================
 @st.cache_resource
 def get_db_engine():
@@ -153,162 +143,150 @@ def count_new_banks_for_date(engine, bank_array, cutoff_date):
     except Exception as e:
         st.error(f"Error counting new banks: {e}")
         return 0
+    
 
-# ================= DAILY SUMMARY PROCESSING =================
-def process_daily_summary(df):
-    """Process the daily summary similar to the tkinter app"""
-    try:
-        # -------- REQUIRED COLUMNS --------
-        input_col = "Input_user"
-        search_col = "Search_for"
-        wallet_col = "Upi_bank_account_wallet"
-        status_col = "Approvd_status"
+def generate_daily_qc_summary(df):
 
-        qc_user_col = find_column(df.columns, ["approvedby", "qcby", "qcuser"])
-        video_col = find_column(df.columns, ["videourl", "video"])
-        url_col = video_col
-
-        if not qc_user_col or not video_col:
-            st.error("QC User / Video URL column missing")
-            return None
-
-        # -------- USER LIST --------
-        users = [
-            "Emp Manoj Kumar", "Emp Muskan Verma", "Emp Shashank Sharma",
-            "Emp Sheetal Dubey", "Emp Shubhankar Shukla", "Emp Sunena Yadav",
-            "Emp Vidhi Satsangi", "INT Bhavna Mathur",
-            "INT Chandrakanta Vishwakarma", "INT Gunjan Baghel",
-            "INT Laxmi Kumari", "INT Neha Baghel",
-            "INT Riya Kaushik", "INT Shikha Gautam"
-        ]
-
-        multi_users = {
-            "Emp Sunena Yadav",
-            "Emp Shubhankar Shukla",
-            "Emp Sheetal Dubey"
-        }
-
-        summary = pd.DataFrame({"Name": users})
-
-        # ================= INSERTION =================
-        approved = df[
-            (df[input_col].isin(users)) &
-            (df[status_col] == 1)
-        ].copy()
-
-        approved["_used"] = False
-
-        # ---- NOT FOUND (HIGHEST PRIORITY) ----
-        not_found = approved[
-            (approved[search_col] == "Web") &
-            (approved[input_col].str.contains("nfuser", case=False, na=False))
-        ]
-        approved.loc[not_found.index, "_used"] = True
-
-        # ---- MULTIPLE CASES ----
-        dup_urls = approved[url_col].astype(str).str.strip()
-        dup_urls = dup_urls[dup_urls != ""]
-        dup_urls = dup_urls[dup_urls.duplicated(keep=False)]
-
-        multiple = approved[
-            (~approved["_used"]) &
-            (approved[input_col].isin(multi_users)) &
-            (approved[search_col] == "Web") &
-            (approved[wallet_col] == "UPI") &
-            (approved[url_col].astype(str).str.strip().isin(dup_urls))
-        ]
-        approved.loc[multiple.index, "_used"] = True
-
-        # ---- DAILY CASES ----
-        daily = approved[
-            (~approved["_used"]) &
-            (approved[search_col] == "Web") &
-            (approved[wallet_col].isin(["UPI", "Bank Account"]))
-        ]
-        approved.loc[daily.index, "_used"] = True
-
-        # ---- APP ----
-        app = approved[
-            (~approved["_used"]) &
-            (approved[search_col] == "App")
-        ]
-        approved.loc[app.index, "_used"] = True
-
-        # ---- CRYPTO ----
-        crypto = approved[
-            (~approved["_used"]) &
-            (approved[search_col] == "Web") &
-            (approved[wallet_col] == "Crypto")
-        ]
-
-        # ---- WA / TG ----
-        watg = approved[
-            approved[search_col] == "Messaging Channel Platforms"
-        ]
-
-        def m(df_):
-            return df_.groupby(input_col).size()
-
-        summary["Daily Cases"] = summary["Name"].map(m(daily)).fillna("NA")
-        summary["Multiple Cases"] = summary["Name"].map(m(multiple)).fillna("NA")
-        summary["Not Found"] = summary["Name"].map(m(not_found)).fillna("NA")
-        summary["App"] = summary["Name"].map(m(app)).fillna("NA")
-        summary["WA/TG Case"] = summary["Name"].map(m(watg)).fillna("NA")
-        summary["Crypto Cases"] = summary["Name"].map(m(crypto)).fillna("NA")
-
-        num_cols = [
-            "Daily Cases", "Multiple Cases", "Not Found",
-            "App", "WA/TG Case", "Crypto Cases"
-        ]
-        summary["Total Case"] = summary[num_cols].replace("NA", 0).astype(int).sum(axis=1)
-
-        # ================= ERROR =================
-        error_df = df[
-            (df[status_col] == 2) &
-            (df[input_col] != df[qc_user_col])
-        ]
-        summary["Error"] = summary["Name"].map(
-            error_df.groupby(input_col).size()
-        ).fillna("NA")
-
-        # ================= QC SUMMARY =================
-        total_qc = df.groupby(qc_user_col).size()
-        video_qc = df[
-            df[video_col].notna() &
-            (df[video_col].astype(str).str.strip() != "")
-        ].groupby(qc_user_col).size()
-
-        qc_df = pd.DataFrame({
-            "Non Video QC": total_qc - video_qc,
-            "Video QC": video_qc,
-            "Total QC": total_qc
-        }).fillna(0).astype(int)
-
-        qc_df["Home QC"] = "NA"
-        qc_df.reset_index(inplace=True)
-        qc_df.rename(columns={qc_user_col: "Name"}, inplace=True)
-
-        final_summary = summary.merge(qc_df, on="Name", how="left").fillna("NA")
-
-        # ================= TOTAL ROW =================
-        total_row = {}
-        for col in final_summary.columns:
-            if col == "Name":
-                total_row[col] = "Total"
-            else:
-                col_data = final_summary[col].replace("NA", 0)
-                total_row[col] = int(col_data.sum()) if pd.api.types.is_numeric_dtype(col_data) else "NA"
-
-        final_summary = pd.concat(
-            [final_summary, pd.DataFrame([total_row])],
-            ignore_index=True
-        )
-
-        return final_summary
-
-    except Exception as e:
-        st.error(f"Error processing daily summary: {e}")
+    def find_column(cols, keys):
+        for c in cols:
+            cc = c.lower().replace(" ", "").replace("_", "")
+            for k in keys:
+                if k in cc:
+                    return c
         return None
+
+    input_col = "Input_user"
+    search_col = "Search_for"
+    wallet_col = "Upi_bank_account_wallet"
+    status_col = "Approvd_status"
+
+    qc_user_col = find_column(df.columns, ["approvedby", "qcby", "qcuser"])
+    video_col = find_column(df.columns, ["videourl", "video"])
+
+    if not qc_user_col or not video_col:
+        st.error("QC User / Video URL column missing")
+        return None
+
+    users = [
+        "Emp Manoj Kumar", "Emp Muskan Verma", "Emp Shashank Sharma",
+        "Emp Sheetal Dubey", "Emp Shubhankar Shukla", "Emp Sunena Yadav",
+        "Emp Vidhi Satsangi", "INT Bhavna Mathur",
+        "INT Chandrakanta Vishwakarma", "INT Gunjan Baghel",
+        "INT Laxmi Kumari", "INT Neha Baghel",
+        "INT Riya Kaushik", "INT Shikha Gautam"
+    ]
+
+    multi_users = {
+        "Emp Sunena Yadav",
+        "Emp Shubhankar Shukla",
+        "Emp Sheetal Dubey"
+    }
+
+    summary = pd.DataFrame({"Name": users})
+
+    approved = df[
+        (df[input_col].isin(users)) &
+        (df[status_col] == 1)
+    ].copy()
+
+    approved["_used"] = False
+
+    not_found = approved[
+        (approved[search_col] == "Web") &
+        (approved[input_col].str.contains("nfuser", case=False, na=False))
+    ]
+    approved.loc[not_found.index, "_used"] = True
+
+    dup_urls = approved[video_col].astype(str).str.strip()
+    dup_urls = dup_urls[dup_urls != ""]
+    dup_urls = dup_urls[dup_urls.duplicated(keep=False)]
+
+    multiple = approved[
+        (~approved["_used"]) &
+        (approved[input_col].isin(multi_users)) &
+        (approved[search_col] == "Web") &
+        (approved[wallet_col] == "UPI") &
+        (approved[video_col].astype(str).str.strip().isin(dup_urls))
+    ]
+    approved.loc[multiple.index, "_used"] = True
+
+    daily = approved[
+        (~approved["_used"]) &
+        (approved[search_col] == "Web") &
+        (approved[wallet_col].isin(["UPI", "Bank Account"]))
+    ]
+    approved.loc[daily.index, "_used"] = True
+
+    app = approved[
+        (~approved["_used"]) &
+        (approved[search_col] == "App")
+    ]
+
+    crypto = approved[
+        (approved[search_col] == "Web") &
+        (approved[wallet_col] == "Crypto")
+    ]
+
+    watg = approved[
+        approved[search_col] == "Messaging Channel Platforms"
+    ]
+
+    def m(x): return x.groupby(input_col).size()
+
+    summary["Daily Cases"] = summary["Name"].map(m(daily)).fillna("NA")
+    summary["Multiple Cases"] = summary["Name"].map(m(multiple)).fillna("NA")
+    summary["Not Found"] = summary["Name"].map(m(not_found)).fillna("NA")
+    summary["App"] = summary["Name"].map(m(app)).fillna("NA")
+    summary["WA/TG Case"] = summary["Name"].map(m(watg)).fillna("NA")
+    summary["Crypto Cases"] = summary["Name"].map(m(crypto)).fillna("NA")
+
+    num_cols = [
+        "Daily Cases", "Multiple Cases", "Not Found",
+        "App", "WA/TG Case", "Crypto Cases"
+    ]
+    summary["Total Case"] = summary[num_cols].replace("NA", 0).astype(int).sum(axis=1)
+
+    error_df = df[
+        (df[status_col] == 2) &
+        (df[input_col] != df[qc_user_col])
+    ]
+    summary["Error"] = summary["Name"].map(
+        error_df.groupby(input_col).size()
+    ).fillna("NA")
+
+    total_qc = df.groupby(qc_user_col).size()
+    video_qc = df[
+        df[video_col].notna() &
+        (df[video_col].astype(str).str.strip() != "")
+    ].groupby(qc_user_col).size()
+
+    qc_df = pd.DataFrame({
+        "Non Video QC": total_qc - video_qc,
+        "Video QC": video_qc,
+        "Total QC": total_qc
+    }).fillna(0).astype(int)
+
+    qc_df["Home QC"] = "NA"
+    qc_df.reset_index(inplace=True)
+    qc_df.rename(columns={qc_user_col: "Name"}, inplace=True)
+
+    final_summary = summary.merge(qc_df, on="Name", how="left").fillna("NA")
+
+    total_row = {}
+    for col in final_summary.columns:
+        if col == "Name":
+            total_row[col] = "Total"
+        else:
+            col_data = final_summary[col].replace("NA", 0)
+            total_row[col] = int(col_data.sum()) if pd.api.types.is_numeric_dtype(col_data) else "NA"
+
+    final_summary = pd.concat(
+        [final_summary, pd.DataFrame([total_row])],
+        ignore_index=True
+    )
+
+    return final_summary
+
 
 # ================= UI =================
 st.title("UPI, Bank & Website Summary")
@@ -347,7 +325,7 @@ if uploaded_file:
         (df["Feature_type"].astype(str).str.strip() == "BS Money Laundering") &
         (df["Approvd_status"].astype(str).str.strip() == "1") &
         (df["Input_user"].astype(str).str.strip().str.lower() != "automated") &
-        (df["Search_for"].astype(str).str.strip().isin(["App", "Web"])) &
+        (df["Search_for"].astype(str).str.strip().isin(["App", "Web", "Messaging Channel Platforms"])) &
         (df["Upi_bank_account_wallet"].astype(str).str.strip().isin(["UPI", "Bank Account"]))
     ].copy()
 
@@ -483,39 +461,39 @@ if uploaded_file:
                 "unique_website": int(row["unique_website"]) if not pd.isna(row["unique_website"]) else 0
             })
 
-            # ---------- USER-WISE UPI SUMMARY FOR THIS DATE ----------
-            
-            for user in target_users:
-                user_mask = (
-                    (upi_df["Inserted_date"] == date) &
-                    (upi_df["Input_user"].astype(str).str.strip() == user) &
-                    (upi_df["Approvd_status"].astype(str).str.strip() == "1") &
-                    (upi_df["Upi_bank_account_wallet"].astype(str).str.strip().str.upper() == "UPI")
-                )
+        # ---------- USER-WISE UPI SUMMARY FOR THIS DATE ----------
+        
+        for user in target_users:
+            user_mask = (
+                (upi_df["Inserted_date"] == date) &
+                (upi_df["Input_user"].astype(str).str.strip() == user) &
+                (upi_df["Approvd_status"].astype(str).str.strip() == "1") &
+                (upi_df["Upi_bank_account_wallet"].astype(str).str.strip().str.upper() == "UPI")
+            )
 
-                user_df = upi_df.loc[user_mask].copy()
+            user_df = upi_df.loc[user_mask].copy()
 
-                total = int(len(user_df))
-                unique_count = int(user_df["Upi_vpa_clean"].dropna().astype(str).str.strip().nunique())
+            total = int(len(user_df))
+            unique_count = int(user_df["Upi_vpa_clean"].dropna().astype(str).str.strip().nunique())
 
-                # get unique upis for DB check (as list)
-                user_upis_list = user_df["Upi_vpa_clean"].dropna().astype(str).str.strip().unique().tolist()
+            # get unique upis for DB check (as list)
+            user_upis_list = user_df["Upi_vpa_clean"].dropna().astype(str).str.strip().unique().tolist()
 
-                # call DB function to get new upis for this user's list (uses your chunking function)
-                new_count = count_new_upis_for_date(engine, user_upis_list, cutoff_date) if user_upis_list else 0
+            # call DB function to get new upis for this user's list (uses your chunking function)
+            new_count = count_new_upis_for_date(engine, user_upis_list, cutoff_date) if user_upis_list else 0
 
-                unique_pct = f"{(unique_count / total * 100):.0f}%" if total else "0%"
-                new_pct = f"{(new_count / unique_count * 100):.0f}%" if unique_count else "0%"
+            unique_pct = f"{(unique_count / total * 100):.0f}%" if total else "0%"
+            new_pct = f"{(new_count / unique_count * 100):.0f}%" if unique_count else "0%"
 
-                user_rows.append({
-                    "Date": date,
-                    "Input_user": user,
-                    "Total": total,
-                    "Unique_UPI_Count": unique_count,
-                    "Unique_UPI_%": unique_pct,
-                    "New_UPI_Count": new_count,
-                    "New_UPI_%": new_pct
-                })
+            user_rows.append({
+                "Date": date,
+                "Input_user": user,
+                "Total": total,
+                "Unique_UPI_Count": unique_count,
+                "Unique_UPI_%": unique_pct,
+                "New_UPI_Count": new_count,
+                "New_UPI_%": new_pct
+            })
 
         # ---------- FREELANCER SUMMARY FOR THIS DATE ----------
     
@@ -652,9 +630,6 @@ if uploaded_file:
     multiple_summary_df = pd.DataFrame(user_rows)
     freelancer_summary_df = pd.DataFrame(freelancer_summary)
 
-    # ---------- PROCESS DAILY SUMMARY ----------
-    daily_summary_df = process_daily_summary(df)
-
     # ---------- DISPLAY ----------
     st.subheader("📊 Summary Report")
 
@@ -664,7 +639,7 @@ if uploaded_file:
             "UPI & Bank Summary",
             "Multiple User's Summary",
             "Employee, Intern & Freelancer Summary",
-            "Daily Summary"
+            "Daily QC & Insertion Summary"
         ]
     )
 
@@ -788,11 +763,6 @@ if uploaded_file:
         )
 
     elif summary_type == "Multiple User's Summary":
-        # Get the last date from user_rows
-        if user_rows:
-            date = user_rows[-1]["Date"]
-        else:
-            date = "N/A"
 
         # ---------- TOTAL CALCULATION (ADD HERE – BEFORE HTML) ----------
         total_total = multiple_summary_df["Total"].sum()
@@ -893,41 +863,6 @@ if uploaded_file:
         )
         
     elif summary_type == "Employee, Intern & Freelancer Summary":
-        # Get the last date from freelancer_summary
-        if freelancer_summary:
-            date = freelancer_summary[-1]["Date"]
-            
-            # Get values for the last date
-            emp_data = [x for x in freelancer_summary if x["User_Type"] == "Employee" and x["Date"] == date]
-            int_data = [x for x in freelancer_summary if x["User_Type"] == "INT" and x["Date"] == date]
-            freelancer_data = [x for x in freelancer_summary if x["User_Type"] == "Freelancer" and x["Date"] == date]
-            
-            e_total_upi = emp_data[0]["Total_UPI"] if emp_data else 0
-            e_unique_upi = emp_data[0]["Unique_UPI"] if emp_data else 0
-            e_new_upi = emp_data[0]["New_UPI"] if emp_data else 0
-            e_total_bank = emp_data[0]["Total_Bank"] if emp_data else 0
-            e_unique_bank = emp_data[0]["Unique_Bank"] if emp_data else 0
-            e_new_bank = emp_data[0]["New_Bank"] if emp_data else 0
-            
-            i_total_upi = int_data[0]["Total_UPI"] if int_data else 0
-            i_unique_upi = int_data[0]["Unique_UPI"] if int_data else 0
-            i_new_upi = int_data[0]["New_UPI"] if int_data else 0
-            i_total_bank = int_data[0]["Total_Bank"] if int_data else 0
-            i_unique_bank = int_data[0]["Unique_Bank"] if int_data else 0
-            i_new_bank = int_data[0]["New_Bank"] if int_data else 0
-            
-            f_total_upi = freelancer_data[0]["Total_UPI"] if freelancer_data else 0
-            f_unique_upi = freelancer_data[0]["Unique_UPI"] if freelancer_data else 0
-            f_new_upi = freelancer_data[0]["New_UPI"] if freelancer_data else 0
-            f_total_bank = freelancer_data[0]["Total_Bank"] if freelancer_data else 0
-            f_unique_bank = freelancer_data[0]["Unique_Bank"] if freelancer_data else 0
-            f_new_bank = freelancer_data[0]["New_Bank"] if freelancer_data else 0
-        else:
-            date = "N/A"
-            e_total_upi = e_unique_upi = e_new_upi = e_total_bank = e_unique_bank = e_new_bank = 0
-            i_total_upi = i_unique_upi = i_new_upi = i_total_bank = i_unique_bank = i_new_bank = 0
-            f_total_upi = f_unique_upi = f_new_upi = f_total_bank = f_unique_bank = f_new_bank = 0
-            
         # prepare HTML table
         freelancer_table = f"""
             <style>
@@ -1026,109 +961,40 @@ if uploaded_file:
             scrolling=True
         )
 
-    elif summary_type == "Daily Summary":
-        if daily_summary_df is not None:
-            # Create styled HTML table for Daily Summary
-            daily_html = """
-                <style>
-                .daily-table {
-                    width: 100%;
-                    border-collapse: collapse;
-                    font-family: 'Segoe UI', sans-serif;
-                    font-size: 13px;
-                }
-                .daily-table th, .daily-table td {
-                    border: 1px solid #000;
-                    padding: 8px;
-                    text-align: center;
-                }
-                .daily-table thead th {
-                    background-color: #4CAF50;
-                    color: white;
-                    font-weight: 700;
-                }
-                .daily-table tbody tr:last-child {
-                    background-color: #e8f5e9;
-                    font-weight: 700;
-                }
-                .daily-table td:first-child {
-                    text-align: left;
-                }
-                </style>
-                
-                <div style="overflow-x: auto;">
-                <table class="daily-table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Daily Cases</th>
-                            <th>Multiple Cases</th>
-                            <th>Not Found</th>
-                            <th>App</th>
-                            <th>WA/TG Case</th>
-                            <th>Crypto Cases</th>
-                            <th>Total Case</th>
-                            <th>Error</th>
-                            <th>Non Video QC</th>
-                            <th>Video QC</th>
-                            <th>Total QC</th>
-                            <th>Home QC</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            """
-            
-            for _, row in daily_summary_df.iterrows():
-                daily_html += "<tr>"
-                for col in daily_summary_df.columns:
-                    daily_html += f"<td>{row[col]}</td>"
-                daily_html += "</tr>"
-            
-            daily_html += """
-                    </tbody>
-                </table>
-                </div>
-            """
-            
-            components.html(
-                daily_html,
-                height=600,
-                scrolling=True
-            )
-        else:
-            st.error("Unable to generate Daily Summary. Please check if all required columns are present.")
+    elif summary_type == "Daily QC & Insertion Summary":
 
+        daily_summary_df = generate_daily_qc_summary(df)
+
+        if daily_summary_df is not None:
+            st.dataframe(daily_summary_df, use_container_width=True)
+
+            # Download Excel
+            output = BytesIO()
+            daily_summary_df.to_excel(output, index=False)
+            output.seek(0)
+
+            st.download_button(
+                "📥 Download Daily QC Summary Excel",
+                data=output,
+                file_name="FINAL_DAILY_QC_INSERTION_SUMMARY.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     # ---------- EXCEL EXPORT ----------
     output = BytesIO()
     wb = Workbook()
-    
-    # Add UPI & Bank Summary sheet
-    ws1 = wb.active
-    ws1.title = "UPI & Bank Summary"
-    ws1.append(summary_df.columns.tolist())
+    ws = wb.active
+    ws.title = "Summary"
+
+    ws.append(summary_df.columns.tolist())
     for r in dataframe_to_rows(summary_df, index=False, header=False):
-        ws1.append(r)
-    
-    for cell in ws1[1]:
+        ws.append(r)
+
+    for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center")
-    
-    for i, col in enumerate(ws1.columns, 1):
-        ws1.column_dimensions[get_column_letter(i)].width = 18
 
-    # Add Daily Summary sheet if available
-    if daily_summary_df is not None:
-        ws2 = wb.create_sheet("Daily Summary")
-        ws2.append(daily_summary_df.columns.tolist())
-        for r in dataframe_to_rows(daily_summary_df, index=False, header=False):
-            ws2.append(r)
-        
-        for cell in ws2[1]:
-            cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal="center")
-        
-        for i, col in enumerate(ws2.columns, 1):
-            ws2.column_dimensions[get_column_letter(i)].width = 18
+    for i, col in enumerate(ws.columns, 1):
+        ws.column_dimensions[get_column_letter(i)].width = 18
 
     wb.save(output)
     output.seek(0)
@@ -1136,7 +1002,7 @@ if uploaded_file:
     st.download_button(
         "Download Summary Excel",
         data=output,
-        file_name="complete_summary.xlsx",
+        file_name="upi_bank_summary.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
