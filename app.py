@@ -7,6 +7,9 @@ import os
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2 import extras, OperationalError, InterfaceError
+from sqlalchemy import create_engine, text
+
+st.set_page_config(page_title="UPI/Bank Import & Check", layout="wide")
 
 # Load environment variables
 load_dotenv()
@@ -22,7 +25,15 @@ if not DB_URL:
 if DB_URL and 'postgresql+psycopg2://' in DB_URL:
     DB_URL = DB_URL.replace('postgresql+psycopg2://', 'postgresql://')
 
-st.set_page_config(page_title="UPI/Bank Import & Check", layout="wide")
+@st.cache_resource
+def get_engine():
+    return create_engine(
+        DB_URL,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": 30},
+    )
+
+engine = get_engine()
 
 st.markdown("""
     <style>
@@ -341,12 +352,10 @@ with col1:
         try:
             df = pd.read_csv(uploaded_file, dtype=str)
             st.info(f"📄 Loaded {len(df)} rows with {len(df.columns)} columns")
-            
         except Exception as e:
             st.error(f"Could not read CSV: {e}")
             st.stop()
         
-        # Dynamic filtering based on selected import type
         st.write(f"**Applying filters for {target_label}...**")
         
         mask = (
@@ -376,21 +385,19 @@ with col1:
         rename_map = {found_cols_map[c]: c for c in REQUIRED_COLS}
         df_clean = df_clean.rename(columns=rename_map)
         
-        # Validate key column exists
+        # Validate key column
         key_col = CONFLICT_COL
         if key_col not in df_clean.columns:
             st.error(f"Internal error: expected key column '{key_col}' not found.")
             st.stop()
         
-        # Clean data
+        # ---------- CLEANING ----------
         df_clean = df_clean.dropna(subset=[key_col])
         df_clean[key_col] = df_clean[key_col].astype(str).str.strip()
         
-        # Apply specific transformations based on type
         if key_col.lower() == "upi_vpa":
             df_clean[key_col] = df_clean[key_col].str.lower()
         
-        # Remove empty strings after strip
         df_clean = df_clean[df_clean[key_col] != ""]
         df_clean = df_clean.drop_duplicates(subset=[key_col])
         
@@ -400,20 +407,25 @@ with col1:
         # INSERTED_DATE NORMALIZE & TODAY CHECK
         # --------------------------
         if "Inserted_date" in df_clean.columns:
-            try:
-                # Convert to YYYY-MM-DD (string)
-                df_clean["Inserted_date"] = pd.to_datetime(df_clean["Inserted_date"], errors="coerce").dt.strftime("%Y-%m-%d")
-            except Exception:
-                # If conversion fails, leave as-is
-                pass
+            parsed_dates = pd.to_datetime(df_clean["Inserted_date"], errors="coerce")
+            
+            nat_mask = parsed_dates.isna()
+            nat_count = int(nat_mask.sum())
+            
+            if nat_count > 0:
+                st.warning(f"⚠️ {nat_count} row(s) have unparseable dates and will be removed.")
+                df_clean = df_clean[~nat_mask].copy()
+                parsed_dates = parsed_dates[~nat_mask]
+            
+            # Python date object — matches PostgreSQL date type
+            df_clean["Inserted_date"] = parsed_dates.dt.date
 
-            # Today's date in ISO format (YYYY-MM-DD)
-            today_str = datetime.date.today().isoformat()
-            today_mask = df_clean["Inserted_date"] == today_str
+            today = datetime.date.today()
+            today_mask = df_clean["Inserted_date"] == today
             today_count = int(today_mask.sum())
 
             if today_count > 0:
-                st.warning(f"⚠️ {today_count} row(s) contain today's date ({today_str}).")
+                st.warning(f"⚠️ {today_count} row(s) contain today's date ({today.isoformat()}).")
                 st.write("If you don't want rows with today's date to be imported, select the checkbox below to remove them and continue.")
                 remove_today = st.checkbox("Remove rows with today's date and continue import", value=False, key="remove_today")
 
@@ -426,44 +438,94 @@ with col1:
         # --------------------------
         # END OF DATE CHECK
         # --------------------------
-        
-        records = df_clean.to_dict(orient="records")
-        
-        if len(records) == 0:
+
+        total_rows = len(df_clean)
+
+        if total_rows == 0:
             st.warning("⚠️ No records to import after all filters and cleaning.")
             st.stop()
         
-        st.success(f"✅ Prepared {len(records)} unique records to import into `{TABLE_NAME}`")
+        st.success(f"✅ Prepared {total_rows:,} unique records to import into `{TABLE_NAME}`")
         
-        # Show preview
         with st.expander("📋 Preview data (first 10 rows)", expanded=False):
             st.dataframe(df_clean.head(10), use_container_width=True)
         
-        # Configuration options (removed - using single transaction)
-        st.info("💡 Import will execute in ONE transaction for maximum speed")
+        CHUNK_SIZE = 10_000
+        st.info(f"💡 Import will execute in chunks of {CHUNK_SIZE:,} rows with live progress")
         
         btn = st.button("🚀 Start Import", use_container_width=True, type="primary")
         
         if btn:
-            with st.spinner("Importing all records in one transaction..."):
-                result = import_with_retries(
-                    records,
-                    TABLE_NAME,
-                    on_conflict=CONFLICT_COL,
-                    initial_chunk_size=len(records),  # All records at once
-                    max_retries=3,
-                    backoff_seconds=2
-                )
-                
+            start_time = time.time()
+
+            inserted_total = 0
+            skipped_total  = 0
+
+            # --- Live UI elements ---
+            progress_bar    = st.progress(0)
+            status_text     = st.empty()
+            metrics_cols    = st.columns(3)
+            inserted_metric = metrics_cols[0].empty()
+            skipped_metric  = metrics_cols[1].empty()
+            elapsed_metric  = metrics_cols[2].empty()
+
+            try:
+                for i in range(0, total_rows, CHUNK_SIZE):
+                    chunk = df_clean.iloc[i:i + CHUNK_SIZE]
+
+                    # Build arrays for unnest insert
+                    dates = chunk["Inserted_date"].tolist() if "Inserted_date" in chunk.columns else [None] * len(chunk)
+                    keys  = chunk[key_col].tolist()
+
+                    with engine.begin() as conn:
+                        result = conn.execute(
+                            text(f"""
+                                INSERT INTO "{TABLE_NAME}" ("Inserted_date", "{key_col}")
+                                SELECT d, u
+                                FROM unnest(
+                                    CAST(:dates AS date[]),
+                                    CAST(:keys  AS text[])
+                                ) AS t(d, u)
+                                ON CONFLICT DO NOTHING
+                            """),
+                            {
+                                "dates": dates,
+                                "keys":  keys
+                            }
+                        )
+
+                        inserted = result.rowcount
+                        skipped  = len(chunk) - inserted
+                        inserted_total += inserted
+                        skipped_total  += skipped
+
+                    # --- Update progress ---
+                    processed = min(i + CHUNK_SIZE, total_rows)
+                    pct       = processed / total_rows
+                    elapsed   = time.time() - start_time
+
+                    progress_bar.progress(pct)
+                    status_text.write(
+                        f"⏳ Processing chunk {i // CHUNK_SIZE + 1} — "
+                        f"{processed:,} / {total_rows:,} rows ({pct*100:.1f}%)"
+                    )
+                    inserted_metric.metric("✅ Inserted", f"{inserted_total:,}")
+                    skipped_metric.metric("⏭️ Skipped (duplicates)", f"{skipped_total:,}")
+                    elapsed_metric.metric("⏱️ Elapsed", f"{elapsed:.1f}s")
+
+                # --- Final summary ---
+                elapsed = time.time() - start_time
+                progress_bar.progress(1.0)
+                status_text.success(f"🎉 Import complete in {elapsed:.1f}s!")
+
                 st.divider()
-                st.success(f"✅ Done! Processed: {result['inserted']} records")
-                
-                if result["errors"]:
-                    st.error(f"⚠️ {len(result['errors'])} chunk errors")
-                    with st.expander("View errors"):
-                        st.json(result["errors"])
-                else:
-                    st.info("✅ No errors reported")
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("✅ Total Inserted", f"{inserted_total:,}")
+                col_b.metric("⏭️ Total Skipped", f"{skipped_total:,}")
+                col_c.metric("⏱️ Total Time", f"{elapsed:.1f}s")
+
+            except Exception as e:
+                st.error(f"❌ Import failed: {e}")
 
 # ============================================================================
 # COLUMN 2: CHECK FUNCTIONALITY
