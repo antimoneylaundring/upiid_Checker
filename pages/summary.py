@@ -603,9 +603,15 @@ if uploaded_file:
 
             # FIX 1: Multiple user summary — now runs for EVERY date
             for user in target_users:
+                duplicate_urls = (
+                    upi_df[upi_df["Inserted_date"] == date]
+                    .groupby(["Input_user", "Website_url"])["Website_url"]
+                    .transform("count") > 1
+                )
+
                 user_mask = (
                     (upi_df["Inserted_date"] == date) &
-                    (upi_df["Input_user"].astype(str).str.strip() == user)
+                    (upi_df["Input_user"].astype(str).str.strip() == user) & duplicate_urls
                 )
                 user_sub = upi_df.loc[user_mask].copy()
                 total = int(len(user_sub))
